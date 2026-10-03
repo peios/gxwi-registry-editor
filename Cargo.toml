@@ -11,7 +11,7 @@ libgxwi = { path = "../gxwi/libgxwi" }
 # The registry, and its values decoded by their types. The revision libgxwi
 # pins, which it must: `peios-sys` links libpeios, and a program can hold
 # only one of it.
-peios = { git = "https://github.com/peios/peios-rs.git", rev = "fa833541e1837042765072f092140f4af683edc2", package = "peios" }
+peios = { git = "https://github.com/peios/peios-rs.git", rev = "3cf23f68d40c4adff252e28241bb3c958fba824f", package = "peios" }
 # Who a key under Users is, said as the permissions editor says it. Beside
 # this checkout until it is pushed.
 gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["names"] }
@@ -19,3 +19,6 @@ gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, feature
 jiff = "0.2.29"
 # For waiting on the keys being watched.
 libc = "0.2"
+
+[dev-dependencies]
+serde_json = "1"

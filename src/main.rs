@@ -13,6 +13,7 @@ use gxwi_sd_editor::names::Names;
 use libgxwi::{App, Surface};
 use peios::registry::{Key, NotifyFilter, WatchEventType};
 
+mod edit;
 mod editor;
 mod keys;
 mod words;

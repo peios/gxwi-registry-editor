@@ -6,10 +6,13 @@
 //! a key that may not be listed can still have keys beneath it that may be
 //! read. Those are reached by their paths.
 
-use peios::registry::{Data, Key, KeyAccess, OpenFlags, ValueType};
+use peios::registry::{CreateFlags, Data, Disposition, Key, KeyAccess, OpenFlags, Transaction, ValueType};
 
 const EACCES: i32 = 13;
 const ENOENT: i32 = 2;
+const EAGAIN: i32 = 11;
+const ENOMEM: i32 = 12;
+const ENOTEMPTY: i32 = 39;
 
 /// The keys every path starts from. The registry has no call that lists
 /// them. `CurrentUser` is the kernel's name for the reader's own key under
@@ -135,6 +138,90 @@ pub fn origin(path: &str, name: &str) -> Option<Origin> {
 /// The key at `path`, opened for watching, if it may be.
 pub fn watchable(path: &str) -> Option<Key> {
     open(path, KeyAccess::NOTIFY).ok()
+}
+
+/// What the person may change of a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct May {
+    /// Set, change and delete its values.
+    pub set_values: bool,
+    /// Create keys under it.
+    pub create_keys: bool,
+    /// Delete it.
+    pub delete: bool,
+}
+
+/// What the person may change of the key at `path`, found by asking the
+/// registry to open it for each: a key may be opened for any one right, so
+/// each open is the registry's own answer, owner rights and privileges
+/// included.
+pub fn may(path: &str) -> May {
+    let can = |access: KeyAccess| open(path, access).is_ok();
+    May {
+        set_values: can(KeyAccess::SET_VALUE),
+        create_keys: can(KeyAccess::CREATE_SUB_KEY),
+        // A root may not be deleted, whoever asks.
+        delete: parent(path).is_some() && can(KeyAccess::DELETE | KeyAccess::ENUMERATE_SUB_KEYS),
+    }
+}
+
+/// Why a value was not set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unset {
+    /// Someone else changed it after it was read.
+    Changed,
+    /// Anything else, in words.
+    Refused(String),
+}
+
+/// Sets the value `name` of the key at `path` to `data`. With `expected`,
+/// only if the value is still as it was when it was read: its sequence
+/// number then.
+pub fn set(path: &str, name: &str, data: &Data, expected: Option<u64>) -> Result<(), Unset> {
+    let key = open(path, KeyAccess::SET_VALUE).map_err(|e| Unset::Refused(refused(&e, "change this key's values")))?;
+    let bytes = data.encode();
+    let mut write = key.set_value(name.as_bytes(), data.ty(), &bytes);
+    if let Some(sequence) = expected {
+        write.expect_seq(sequence);
+    }
+    write.call().map_err(|e| match e.raw_os_error() {
+        Some(EAGAIN) => Unset::Changed,
+        _ => Unset::Refused(refused(&e, "change this value")),
+    })
+}
+
+/// Deletes the value `name` of the key at `path`.
+pub fn delete_value(path: &str, name: &str) -> Result<(), String> {
+    let key = open(path, KeyAccess::SET_VALUE).map_err(|e| refused(&e, "change this key's values"))?;
+    key.delete_value(name.as_bytes(), None, None).map_err(|e| refused(&e, "delete this value"))
+}
+
+/// Creates the key `name` under the key at `path`, and gives its path.
+pub fn create(path: &str, name: &str) -> Result<String, String> {
+    if name.is_empty() || name.contains(['\\', '/']) {
+        return Err("A key's name can't be empty or have \\ or / in it.".into());
+    }
+    let parent = open(path, KeyAccess::CREATE_SUB_KEY).map_err(|e| refused(&e, "create keys here"))?;
+    let (_, made) = Key::create(Some(&parent), name, KeyAccess::READ_CONTROL, CreateFlags::empty(), None, None)
+        .map_err(|e| refused(&e, "create this key"))?;
+    match made {
+        Disposition::CreatedNew => Ok(join(path, name)),
+        Disposition::OpenedExisting => Err(format!("There is a key called {name} here already.")),
+    }
+}
+
+/// Deletes the key at `path` and everything under it, all or nothing, and
+/// says how many keys went.
+pub fn delete_tree(path: &str) -> Result<u64, String> {
+    let key = open(path, KeyAccess::DELETE | KeyAccess::ENUMERATE_SUB_KEYS).map_err(|e| refused(&e, "delete this key"))?;
+    let txn = Transaction::begin().map_err(|e| refused(&e, "delete this key"))?;
+    let deleted = key.delete_tree(None, Some(&txn)).map_err(|e| match e.raw_os_error() {
+        Some(ENOMEM) => "It holds more keys than can be deleted at once (4,096). Delete some of the keys under it first.".to_string(),
+        Some(ENOTEMPTY) => "A key under it is also set in another layer, so it can't be deleted from this one alone.".to_string(),
+        _ => refused(&e, "delete this key or a key under it"),
+    })?;
+    txn.commit().map_err(|e| refused(&e, "delete this key"))?;
+    Ok(deleted)
 }
 
 fn open(path: &str, access: KeyAccess) -> peios::Result<Key> {
