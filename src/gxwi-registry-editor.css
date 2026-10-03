@@ -1,0 +1,195 @@
+/* Made from the theme's tokens, which the desktop's page for a live surface
+   brings with it. */
+html, body { height: 100%; }
+
+body {
+    margin: 0;
+    background: var(--surface-1);
+    color: var(--text-primary);
+    font: 500 13px/1.4 var(--font-text);
+    color-scheme: light dark;
+    overflow: hidden;
+}
+
+#fx-root { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+#fx-root[data-connected="false"] { opacity: 0.5; }
+
+button { font: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: 1px; }
+
+/* The bar: the path of the key shown, which can be typed. */
+.bar {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
+    padding: var(--space-2);
+    border-bottom: 1px solid var(--border-default);
+    background: var(--surface-2);
+}
+
+.bar input {
+    flex: 1;
+    min-width: 12em;
+    height: var(--control-sm);
+    padding: 0 var(--space-2);
+    font: 500 12px/1.4 var(--font-mono);
+    color: inherit;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.bar button, .details .actions button {
+    height: var(--control-sm);
+    padding: 0 var(--space-3);
+    color: var(--text-primary);
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.bar button:hover, .details .actions button:hover { border-color: var(--border-strong); }
+.details .actions button { font-size: 12px; background: var(--surface-2); }
+
+.body { display: flex; flex: 1; min-height: 0; }
+
+/* The tree of keys. Each level is a list inside the one above, set in. */
+.tree {
+    flex: none;
+    width: 280px;
+    padding: var(--space-2) 0;
+    overflow: auto;
+    border-right: 1px solid var(--border-default);
+}
+.tree ul { margin: 0; padding: 0; list-style: none; }
+.tree ul ul { padding-left: 14px; }
+.tree .row { display: flex; align-items: center; min-width: max-content; padding-right: var(--space-2); }
+.tree .twist {
+    flex: none;
+    width: 18px;
+    height: 22px;
+    padding: 0;
+    color: var(--text-muted);
+    background: none;
+    border: 0;
+    cursor: pointer;
+}
+.tree .name {
+    padding: 2px var(--space-2);
+    color: var(--text-primary);
+    text-align: left;
+    white-space: nowrap;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: default;
+}
+.tree .name:hover { background: var(--surface-2); }
+.tree .name[aria-selected="true"] { background: var(--surface-2); border-color: var(--accent-solid); }
+.tree .name.reached { font-style: italic; }
+.tree .sid { margin-left: var(--space-1); color: var(--text-muted); font: 500 11px/1.4 var(--font-mono); }
+.tree .why { padding: 2px var(--space-2) 2px 18px; font-size: 12px; color: var(--text-muted); }
+
+/* The values of the key shown, one grid for the head and every row so the
+   columns line up. The widths are the page's, from fx-columns. */
+.values { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.head, .entries button {
+    display: grid;
+    grid-template-columns: var(--fx-columns);
+    gap: var(--space-2);
+    align-items: center;
+    padding: var(--space-1) var(--space-3);
+}
+.head {
+    flex: none;
+    border-bottom: 1px solid var(--border-default);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+.entries {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: var(--space-1) 0;
+    list-style: none;
+    overflow-y: auto;
+}
+.entries button {
+    width: 100%;
+    text-align: left;
+    color: var(--text-secondary);
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    cursor: default;
+    user-select: none;
+}
+.entries button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.entries .name { color: var(--text-primary); }
+.entries .name.default { font-style: italic; }
+.entries .data { font: 500 12px/1.4 var(--font-mono); }
+.entries .data.misfit { color: var(--danger-text); }
+.entries button:hover { background: var(--surface-2); }
+.entries button[aria-selected="true"] { background: var(--surface-2); border-color: var(--accent-solid); }
+
+/* The value picked, or the key, in full. */
+.details {
+    flex: none;
+    width: 300px;
+    padding: var(--space-4) var(--space-3);
+    overflow-y: auto;
+    border-left: 1px solid var(--border-default);
+}
+.details h2 { margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.details h3 { margin: var(--space-4) 0 var(--space-2); font-size: 12px; font-weight: 600; }
+.details .id { margin: var(--space-1) 0 0; font: 500 12px/1.4 var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; }
+.details dl { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-3); margin: var(--space-4) 0 0; font-size: 12px; }
+.details dt { color: var(--text-muted); }
+.details dd { margin: 0; overflow-wrap: anywhere; }
+.details .note { margin: var(--space-3) 0 0; font-size: 12px; color: var(--text-secondary); }
+.details .note.bad { color: var(--danger-text); }
+.details .actions { margin: var(--space-4) 0 0; }
+.details pre, .details .list, .details .number {
+    margin: 0;
+    padding: var(--space-2);
+    font: 500 12px/1.5 var(--font-mono);
+    background: var(--bg-sunken);
+    border-radius: var(--radius-sm);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.details .list { padding-left: calc(var(--space-2) + 2.5em); }
+.details .dump { white-space: pre; overflow-x: auto; }
+.details .dump .at { color: var(--text-muted); }
+.details .more { margin: 0; font-size: 12px; color: var(--text-muted); }
+
+.status {
+    display: flex;
+    flex: none;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-3);
+    border-top: 1px solid var(--border-default);
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.status .path { font-family: var(--font-mono); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+.trouble, .more, .said { margin: var(--space-2) var(--space-3); font-size: 12px; color: var(--text-muted); }
+.trouble, .said.bad { color: var(--danger-text); }
+.said { flex: none; }
+
+/* Narrow: the data column goes, then the details pane, then the tree
+   narrows. */
+@media (max-width: 900px) {
+    .head, .entries button { grid-template-columns: minmax(0, 1fr) 120px; }
+    .head span:last-child, .entries .data { display: none; }
+}
+@media (max-width: 700px) { .details { display: none; } }
+@media (max-width: 480px) { .tree { width: 45%; } }

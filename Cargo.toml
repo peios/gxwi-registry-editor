@@ -1,0 +1,21 @@
+[package]
+name = "gxwi-registry-editor"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Beside this checkout until a libgxwi with the dialog role is released.
+libgxwi = { path = "../gxwi/libgxwi" }
+# The registry, and its values decoded by their types. The revision libgxwi
+# pins, which it must: `peios-sys` links libpeios, and a program can hold
+# only one of it.
+peios = { git = "https://github.com/peios/peios-rs.git", rev = "fa833541e1837042765072f092140f4af683edc2", package = "peios" }
+# Who a key under Users is, said as the permissions editor says it. Beside
+# this checkout until it is pushed.
+gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["names"] }
+# A key's last change, said on this machine's clock.
+jiff = "0.2.29"
+# For waiting on the keys being watched.
+libc = "0.2"
