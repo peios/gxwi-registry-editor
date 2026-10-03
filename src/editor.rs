@@ -7,7 +7,7 @@
 //! where the parent may not be listed, since the registry checks only the
 //! key opened.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Weak;
 
 use gxwi_sd_editor::names::Names;
@@ -18,7 +18,7 @@ use peios::security::Sid;
 
 use crate::edit::{self, Base, Form};
 use crate::keys::{self, May, Origin, Read};
-use crate::words;
+use crate::{permissions, words};
 
 pub struct Editor {
     pub window: Weak<Surface<Editor>>,
@@ -37,6 +37,9 @@ pub struct Editor {
     /// What came of what the person last did, or why the path typed could
     /// not be gone to.
     said: Option<Said>,
+    /// What the permissions editor is open on: a key's path, or a key's
+    /// path and a value's name, in lower case.
+    editing: HashSet<String>,
     names: Names,
     zone: TimeZone,
 }
@@ -88,6 +91,7 @@ impl Editor {
             origin: None,
             doing: Doing::Looking,
             said: None,
+            editing: HashSet::new(),
             names,
             zone: TimeZone::system(),
         };
@@ -312,9 +316,9 @@ impl Editor {
                     picked = self.value.as_deref() == Some(value.name.as_str()),
                     default = if value.name.is_empty() { " default" } else { "" },
                     shown = escape(words::value_name(&value.name)),
-                    kind = escape(&words::kind(value.data.ty())),
+                    kind = escape(&if value.sddl.is_some() { "Security descriptor".to_string() } else { words::kind(value.data.ty()) }),
                     misfit = if misfit { " misfit" } else { "" },
-                    data = escape(&words::line(&value.data)),
+                    data = escape(&value.sddl.clone().unwrap_or_else(|| words::line(&value.data))),
                 )
             })
             .collect();
@@ -356,17 +360,31 @@ impl Editor {
                 )
             } else {
                 let off = disabled(self.may.set_values, "You may not change this key's values.");
+                // Who a descriptor lets in can be looked at by anyone who
+                // can read it; the editor says why it can't be changed.
+                let permissions = if value.sddl.is_some() {
+                    format!("<button type=\"button\" fx-click=\"permissions\" fx-value-name=\"{}\">Permissions…</button>", escape(&value.name))
+                } else {
+                    String::new()
+                };
                 format!(
-                    "<p class=\"actions\"><button type=\"button\" fx-click=\"edit\" fx-value-name=\"{name}\"{off}>Edit…</button>\
+                    "<p class=\"actions\">{permissions}<button type=\"button\" fx-click=\"edit\" fx-value-name=\"{name}\"{off}>Edit…</button>\
                      <button type=\"button\" fx-click=\"delete-value\" fx-value-name=\"{name}\"{off}>Delete…</button></p>{may}",
                     name = escape(&value.name),
                     may = if self.may.set_values { String::new() } else { "<p class=\"may\">You may not change this key's values.</p>".into() },
                 )
             };
+            let data = match &value.sddl {
+                Some(sddl) => format!(
+                    "<h3>Security descriptor</h3><p class=\"note\">It holds a security descriptor, shown here as SDDL. Permissions… shows who it lets in.</p>\
+                     <pre class=\"text\">{}</pre>",
+                    escape(sddl)
+                ),
+                None => format!("<h3>Data</h3>{}", data(&value.data)),
+            };
             return format!(
-                "<aside class=\"details\" aria-label=\"The value\"><h2>{name}</h2><dl>{facts}</dl>{note}<h3>Data</h3>{data}{actions}</aside>",
+                "<aside class=\"details\" aria-label=\"The value\"><h2>{name}</h2><dl>{facts}</dl>{note}{data}{actions}</aside>",
                 name = escape(words::value_name(&value.name)),
-                data = data(&value.data),
             );
         }
         let name = keys::names(&self.key).last().unwrap_or_default();
@@ -407,6 +425,12 @@ impl Editor {
                 actions += &format!("<button type=\"button\" fx-click=\"delete-key\"{}>Delete key…</button>", disabled(self.may.delete, "You may not delete this key."));
             }
         }
+        if self.shown().is_some() {
+            actions += &format!(
+                "<button type=\"button\" fx-click=\"permissions\"{}>Permissions…</button>",
+                disabled(self.may.read_permissions, "You may not read who may use this key.")
+            );
+        }
         format!(
             "<aside class=\"details\" aria-label=\"The key\"><h2>{name}</h2><p class=\"id\">{path}</p><dl>{facts}</dl>{notes}\
              <p class=\"actions\">{actions}<button type=\"button\" fx-copy=\"path\" fx-value-path=\"{path}\">Copy path</button></p>{may}</aside>",
@@ -422,7 +446,7 @@ impl Editor {
             return None;
         }
         let root = keys::parent(&self.key).is_none();
-        let May { set_values, create_keys, delete } = self.may;
+        let May { set_values, create_keys, delete, .. } = self.may;
         if !set_values && !create_keys && (root || !delete) {
             return Some("You may read this key but not change it.".into());
         }
@@ -587,6 +611,58 @@ impl Editor {
         }
     }
 
+    /// Opens the permissions editor on the key shown, or on the descriptor
+    /// its value `value` holds.
+    fn permissions(&mut self, value: Option<String>) {
+        let what = match &value {
+            Some(name) => format!("{}\0{name}", self.key.to_lowercase()),
+            None => self.key.to_lowercase(),
+        };
+        let called = match &value {
+            Some(name) => format!("the value {}", words::value_name(name)),
+            None => keys::names(&self.key).last().unwrap_or_default().to_string(),
+        };
+        if self.editing.contains(&what) {
+            self.said = Said::good(format!("The permissions of {called} are open already."));
+            return;
+        }
+        let opened = match &value {
+            Some(name) => permissions::value(&self.key, name, self.may.set_values),
+            None => permissions::key(&self.key),
+        };
+        let (request, mut apply) = match opened {
+            Ok(opened) => opened,
+            Err(why) => return self.said = Said::bad(format!("The permissions of {called} could not be opened: {why}.")),
+        };
+        // What the person may do may change with what was applied, and a
+        // value's new bytes are shown.
+        let looking = self.window.clone();
+        let applied = move |sd: &[u8], parts: &[gxwi_sd_editor::Part]| {
+            apply(sd, parts)?;
+            if let Some(window) = looking.upgrade() {
+                window.update(|editor, _| editor.refresh());
+            }
+            Ok(())
+        };
+        let window = self.window.clone();
+        let closed = what.clone();
+        let done = move || {
+            if let Some(window) = window.upgrade() {
+                window.update(|editor, _| {
+                    editor.editing.remove(&closed);
+                });
+            }
+        };
+        self.said = None;
+        match gxwi_sd_editor::edit(&request, applied, done) {
+            Ok(()) => {
+                self.editing.insert(what);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.said = Said::bad("The permissions editor is not installed."),
+            Err(e) => self.said = Said::bad(format!("The permissions editor could not be started: {e}.")),
+        }
+    }
+
     /// Starts editing the value `name`, or a new one.
     fn edit(&mut self, name: Option<String>, fields: &mut Fields) {
         self.said = None;
@@ -671,7 +747,9 @@ impl Live for Editor {
              <li><button type=\"button\" fx-click=\"delete-value\"{off}>Delete…</button></li></menu>\
              <menu id=\"key-menu\" hidden><li><button type=\"button\" fx-click=\"new-key\"{keys}>New key…</button></li>\
              <li><button type=\"button\" fx-click=\"new-value\"{off}>New value…</button></li>{delete}<hr>\
+             <li><button type=\"button\" fx-click=\"permissions\"{read}>Permissions…</button></li>\
              <li><button type=\"button\" fx-copy=\"path\">Copy path</button></li></menu>",
+            read = if self.may.read_permissions { "" } else { " disabled" },
             off = if values { "" } else { " disabled" },
             keys = if self.may.create_keys { "" } else { " disabled" },
             delete = if root {
@@ -744,6 +822,14 @@ impl Live for Editor {
                 }
             }
             "new-value" => self.edit(None, fields),
+            // A value's descriptor, from the value's button; otherwise the key's.
+            "permissions" => match value["name"].as_str() {
+                Some(name) if self.values().is_some_and(|values| values.iter().any(|value| value.name == name && value.sddl.is_some())) => {
+                    self.permissions(Some(name.to_string()))
+                }
+                Some(_) => {}
+                None => self.permissions(None),
+            },
             "new-key" if self.may.create_keys => {
                 self.said = None;
                 fields.set("key-name", "");
@@ -857,7 +943,8 @@ mod tests {
             reads: reads.into_iter().map(|(path, read)| (path.to_lowercase(), read)).collect(),
             open: open.iter().map(|path| path.to_lowercase()).collect(),
             key: key.into(),
-            may: May { set_values: true, create_keys: true, delete: true },
+            may: May { set_values: true, create_keys: true, delete: true, read_permissions: true },
+            editing: HashSet::new(),
             value: None,
             origin: None,
             doing: Doing::Looking,
@@ -865,6 +952,10 @@ mod tests {
             names,
             zone: TimeZone::UTC,
         }
+    }
+
+    fn value(name: &str, data: Data) -> keys::Value {
+        keys::Value { name: name.into(), size: data.encode().len(), sddl: keys::descriptor(&data), data }
     }
 
     fn listing(subkeys: &[&str]) -> Result<Read, String> {
@@ -909,8 +1000,8 @@ mod tests {
     #[test]
     fn the_default_value_comes_first_and_bytes_that_do_not_fit_are_marked() {
         let values = vec![
-            keys::Value { name: String::new(), data: Data::Sz("first".into()), size: 6 },
-            keys::Value { name: "Broken".into(), data: Data::Raw(ValueType::DWORD, vec![1, 2, 3]), size: 3 },
+            value("", Data::Sz("first".into())),
+            value("Broken", Data::Raw(ValueType::DWORD, vec![1, 2, 3])),
         ];
         let mut editor = seen("Machine", &[], vec![("Machine", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(values) }))]);
         let listing = editor.listing();
@@ -925,10 +1016,10 @@ mod tests {
 
     #[test]
     fn what_may_not_be_changed_is_offered_disabled_and_said_in_words() {
-        let one = || vec![keys::Value { name: "Theme".into(), data: Data::Sz("dark".into()), size: 5 }];
+        let one = || vec![value("Theme", Data::Sz("dark".into()))];
         let read = || Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(one()) });
         let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", read())]);
-        editor.may = May { set_values: false, create_keys: false, delete: false };
+        editor.may = May { set_values: false, create_keys: false, delete: false, read_permissions: true };
         let details = editor.details();
         assert!(details.contains(r#"fx-click="new-key" disabled title="You may not create keys under this key.""#));
         assert!(details.contains(r#"fx-click="delete-key" disabled"#));
@@ -947,8 +1038,8 @@ mod tests {
     #[test]
     fn a_value_is_edited_in_the_form_for_its_type() {
         let values = vec![
-            keys::Value { name: "Count".into(), data: Data::Dword(7), size: 4 },
-            keys::Value { name: "Broken".into(), data: Data::Raw(ValueType::SZ, vec![0xff]), size: 1 },
+            value("Count", Data::Dword(7)),
+            value("Broken", Data::Raw(ValueType::SZ, vec![0xff])),
         ];
         let mut editor = seen("Machine", &[], vec![("Machine", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(values) }))]);
         let mut fields = Fields::default();
@@ -978,7 +1069,7 @@ mod tests {
 
     #[test]
     fn a_new_value_may_not_take_a_name_already_used() {
-        let values = vec![keys::Value { name: "Theme".into(), data: Data::Sz("dark".into()), size: 5 }];
+        let values = vec![value("Theme", Data::Sz("dark".into()))];
         let mut editor = seen("Machine", &[], vec![("Machine", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(values) }))]);
         let mut fields = Fields::default();
         editor.edit(None, &mut fields);
@@ -990,8 +1081,36 @@ mod tests {
     }
 
     #[test]
+    fn a_value_holding_a_descriptor_is_shown_as_one_and_opens_in_the_editor() {
+        let sd = peios::security::sddl::parse("O:BAG:BAD:(A;;GA;;;SY)(A;;GR;;;WD)").unwrap();
+        let values = vec![value("Guard", Data::Binary(sd.as_bytes().to_vec())), value("Plain", Data::Binary(vec![1, 0, 0, 0x80]))];
+        let mut editor = seen("Machine", &[], vec![("Machine", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(values) }))]);
+        let listing = editor.listing();
+        assert!(listing.contains(r#"<span class="type">Security descriptor</span><span class="data">O:BAG:BAD:"#));
+        // Bytes that start as one does but don't parse are only bytes.
+        assert!(listing.contains(r#"<span class="type">Bytes</span><span class="data">01 00 00 80</span>"#));
+        editor.value = Some("Guard".into());
+        let details = editor.details();
+        assert!(details.contains(r#"fx-click="permissions" fx-value-name="Guard""#));
+        assert!(details.contains("<h3>Security descriptor</h3>"));
+        // Who it lets in may be looked at by someone who can't change it.
+        editor.may.set_values = false;
+        assert!(editor.details().contains(r#"fx-click="permissions" fx-value-name="Guard">"#));
+        editor.value = Some("Plain".into());
+        assert!(!editor.details().contains(r#"fx-click="permissions""#));
+    }
+
+    #[test]
+    fn the_key_s_permissions_are_offered_where_they_may_be_read() {
+        let mut editor = seen("Machine", &[], vec![("Machine", listing(&[]))]);
+        assert!(editor.details().contains(r#"<button type="button" fx-click="permissions">Permissions…</button>"#));
+        editor.may.read_permissions = false;
+        assert!(editor.details().contains(r#"fx-click="permissions" disabled title="You may not read who may use this key.""#));
+    }
+
+    #[test]
     fn deleting_asks_first() {
-        let values = vec![keys::Value { name: "Theme".into(), data: Data::Sz("dark".into()), size: 5 }];
+        let values = vec![value("Theme", Data::Sz("dark".into()))];
         let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", Ok(Read { facts: None, subkeys: Ok(vec!["A".into(), "B".into()]), values: Ok(values) }))]);
         let mut fields = Fields::default();
         editor.event("delete-value", &serde_json::json!({ "name": "Theme" }), &mut fields);

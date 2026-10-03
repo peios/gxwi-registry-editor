@@ -16,6 +16,7 @@ use peios::registry::{Key, NotifyFilter, WatchEventType};
 mod edit;
 mod editor;
 mod keys;
+mod permissions;
 mod words;
 
 use editor::Editor;

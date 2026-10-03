@@ -7,6 +7,7 @@
 //! read. Those are reached by their paths.
 
 use peios::registry::{CreateFlags, Data, Disposition, Key, KeyAccess, OpenFlags, Transaction, ValueType};
+use peios::security::{SecurityDescriptor, sddl};
 
 const EACCES: i32 = 13;
 const ENOENT: i32 = 2;
@@ -76,7 +77,26 @@ pub struct Value {
     pub data: Data,
     /// How many bytes it holds.
     pub size: usize,
+    /// The security descriptor it holds, as SDDL, if it holds one.
+    pub sddl: Option<String>,
 }
+
+/// The SDDL of the security descriptor `data` holds, if it holds one: bytes
+/// that start as a self-relative descriptor does (PCDS §5.1: revision 1,
+/// and the self-relative flag set in its control) and that then parse as
+/// one in full. Anything else is only bytes.
+pub fn descriptor(data: &Data) -> Option<String> {
+    let Data::Binary(bytes) = data else { return None };
+    let starts = bytes.len() >= 20 && bytes[0] == 1 && u16::from_le_bytes([bytes[2], bytes[3]]) & SE_SELF_RELATIVE != 0;
+    if !starts {
+        return None;
+    }
+    SecurityDescriptor::from_validated_bytes(bytes.clone()).ok()?;
+    sddl::format(bytes).ok()
+}
+
+/// The control flag of a self-relative descriptor.
+const SE_SELF_RELATIVE: u16 = 0x8000;
 
 /// Which layer a value's data came from, and its sequence number.
 #[derive(Debug, Clone, PartialEq)]
@@ -150,6 +170,8 @@ pub struct May {
     pub create_keys: bool,
     /// Delete it.
     pub delete: bool,
+    /// Read who may use it.
+    pub read_permissions: bool,
 }
 
 /// What the person may change of the key at `path`, found by asking the
@@ -163,7 +185,14 @@ pub fn may(path: &str) -> May {
         create_keys: can(KeyAccess::CREATE_SUB_KEY),
         // A root may not be deleted, whoever asks.
         delete: parent(path).is_some() && can(KeyAccess::DELETE | KeyAccess::ENUMERATE_SUB_KEYS),
+        read_permissions: can(KeyAccess::READ_CONTROL),
     }
+}
+
+/// The bytes of the value `name` of the key at `path`, as they are now.
+pub fn bytes(path: &str, name: &str) -> Result<Vec<u8>, String> {
+    let key = open(path, KeyAccess::QUERY_VALUE).map_err(|e| refused(&e, "read this key's values"))?;
+    key.query_value(name.as_bytes(), None).map(|value| value.data).map_err(|e| refused(&e, "read this value"))
 }
 
 /// Why a value was not set.
@@ -246,10 +275,9 @@ fn values(key: &Key) -> Result<Vec<Value>, String> {
     let mut values: Vec<Value> = records
         .into_iter()
         .filter(|record| record.ty != ValueType::TOMBSTONE)
-        .map(|record| Value {
-            name: String::from_utf8_lossy(&record.name).into_owned(),
-            size: record.data.len(),
-            data: Data::decode(record.ty, &record.data),
+        .map(|record| {
+            let data = Data::decode(record.ty, &record.data);
+            Value { name: String::from_utf8_lossy(&record.name).into_owned(), size: record.data.len(), sddl: descriptor(&data), data }
         })
         .collect();
     values.sort_by_cached_key(|value| (!value.name.is_empty(), value.name.to_lowercase()));
