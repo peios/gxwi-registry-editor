@@ -313,13 +313,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "gxwi-file-dialog"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gxwi-registry-editor"
 version = "0.0.1"
 dependencies = [
+ "gxwi-file-dialog",
  "gxwi-sd-editor",
  "jiff",
  "libc",
  "libgxwi",
+ "libreg",
  "libregman",
  "peios",
  "serde_json",
@@ -559,6 +569,15 @@ checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
 dependencies = [
  "cfg-if",
  "windows-link",
+]
+
+[[package]]
+name = "libreg"
+version = "0.8.16"
+dependencies = [
+ "peios",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

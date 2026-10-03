@@ -19,10 +19,15 @@ gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, feature
 # What the registry manual says of a key and its values, read as regman
 # reads it. Beside this checkout until it is pushed.
 libregman = { path = "../peiosutils/src/uu/regman/libregman" }
+# The registry document, written and read as reg writes and reads it.
+# Beside this checkout until it is pushed.
+libreg = { path = "../peiosutils/src/uu/reg/libreg" }
+serde_json = "1"
+# The file to export to, import from, back up to or restore from, chosen in
+# the shared file dialog: its protocol, and nothing of its program. Beside
+# this checkout until it is pushed.
+gxwi-file-dialog = { path = "../gxwi-file-dialog", default-features = false }
 # A key's last change, said on this machine's clock.
 jiff = "0.2.29"
 # For waiting on the keys being watched.
 libc = "0.2"
-
-[dev-dependencies]
-serde_json = "1"

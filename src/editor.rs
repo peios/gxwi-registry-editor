@@ -19,8 +19,11 @@ use peios::security::Sid;
 
 use crate::docs::{self, Docs};
 use crate::edit::{self, Base, Form};
+use crate::files::{self, Held, Purpose};
 use crate::keys::{self, May, Origin, Read};
 use crate::{permissions, words};
+use libreg::Document;
+use std::path::PathBuf;
 
 pub struct Editor {
     pub window: Weak<Surface<Editor>>,
@@ -49,6 +52,10 @@ pub struct Editor {
     layers: Vec<Layer>,
     layer: Option<String>,
     layer_refused: Option<String>,
+    /// The backup privileges the person holds, and whether the file
+    /// dialog is open.
+    held: Held,
+    choosing: bool,
     names: Names,
     zone: TimeZone,
 }
@@ -68,6 +75,10 @@ enum Doing {
     DeletingValue(String),
     /// Asking before the key shown is deleted, and what is under it.
     DeletingKey,
+    /// Asking before a registry document read from a file is written.
+    Importing { doc: Document, file: PathBuf },
+    /// Asking before the key shown is replaced from a backup.
+    Restoring(PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -105,6 +116,8 @@ impl Editor {
             layers: Vec::new(),
             layer: None,
             layer_refused: None,
+            held: files::held(),
+            choosing: false,
             names,
             zone: TimeZone::system(),
         };
@@ -382,6 +395,8 @@ impl Editor {
             Doing::Editing { name, ty, misfit, base, .. } => return self.value_form(name.as_deref(), *ty, *misfit, *base),
             Doing::NewKey => return self.key_form(),
             Doing::DeletingKey => return self.asking_key(),
+            Doing::Importing { doc, file } => return self.asking_import(doc, file),
+            Doing::Restoring(file) => return self.asking_restore(file),
             Doing::DeletingValue(_) | Doing::Looking => {}
         }
         let row = |name: &str, value: &str| format!("<dt>{name}</dt><dd>{}</dd>", escape(value));
@@ -482,7 +497,8 @@ impl Editor {
         }
         format!(
             "<aside class=\"details\" aria-label=\"The key\"><h2>{name}</h2><p class=\"id\">{path}</p><dl>{facts}</dl>{notes}\
-             <p class=\"actions\">{actions}<button type=\"button\" fx-copy=\"path\" fx-value-path=\"{path}\">Copy path</button></p>{may}{about}</aside>",
+             <p class=\"actions\">{actions}<button type=\"button\" fx-copy=\"path\" fx-value-path=\"{path}\">Copy path</button></p>{may}{files}{about}</aside>",
+            files = self.file_buttons(),
             name = escape(name),
             path = escape(&self.key),
             may = self.may_words().map(|said| format!("<p class=\"may\">{said}</p>")).unwrap_or_default(),
@@ -603,6 +619,115 @@ impl Editor {
     /// else `own`, the key's own reason.
     fn because(&self, own: &str) -> String {
         self.layer_refused.clone().unwrap_or_else(|| own.to_string())
+    }
+
+    /// Export, import, back up and restore, as far as each may be done.
+    fn file_buttons(&self) -> String {
+        if !self.readable() {
+            return String::new();
+        }
+        let busy = |allowed: bool, why: &str| {
+            if self.choosing {
+                " disabled title=\"A file is being chosen already.\"".to_string()
+            } else {
+                disabled(allowed, why)
+            }
+        };
+        let imports = self.layer_refused.as_deref().unwrap_or("");
+        format!(
+            "<section class=\"files\"><h3>Files</h3><p class=\"actions\">\
+             <button type=\"button\" fx-click=\"export\"{export}>Export…</button>\
+             <button type=\"button\" fx-click=\"import\"{import}>Import…</button>\
+             <button type=\"button\" fx-click=\"backup\"{backup}>Back up…</button>\
+             <button type=\"button\" fx-click=\"restore\"{restore}>Restore…</button></p></section>",
+            export = busy(true, ""),
+            import = busy(self.layer_refused.is_none(), imports),
+            backup = busy(self.held.backup, "Backing up needs the privilege to back up files and keys (SeBackupPrivilege), which you don't hold."),
+            restore = busy(self.held.restore && keys::parent(&self.key).is_some(), if self.held.restore {
+                "A root can't be restored."
+            } else {
+                "Restoring needs the privilege to restore files and keys (SeRestorePrivilege), which you don't hold."
+            }),
+        )
+    }
+
+    /// Opens the file dialog for `purpose`, for the key shown; what comes
+    /// back is `chosen`'s.
+    fn choose(&mut self, purpose: Purpose) {
+        if self.choosing {
+            return;
+        }
+        let request = files::request(purpose, &self.key);
+        let window = self.window.clone();
+        let key = self.key.clone();
+        let opened = gxwi_file_dialog::choose(&request, move |file| {
+            if let Some(window) = window.upgrade() {
+                window.update(|editor, _| {
+                    editor.choosing = false;
+                    // A file chosen for a key no longer shown is let go.
+                    if let Some(file) = file
+                        && keys::same(&editor.key, &key)
+                    {
+                        editor.chosen(purpose, file);
+                    }
+                });
+            }
+        });
+        match opened {
+            Ok(()) => self.choosing = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => self.said = Said::bad("The file dialog is not installed."),
+            Err(e) => self.said = Said::bad(format!("The file dialog could not be started: {e}.")),
+        }
+    }
+
+    /// Does `purpose` with the file chosen, or asks first where it writes
+    /// into the registry.
+    fn chosen(&mut self, purpose: Purpose, file: PathBuf) {
+        let name = file.display().to_string();
+        match purpose {
+            Purpose::Export => {
+                self.said = match files::export(&self.key, &file) {
+                    Ok(keys) => Said::good(format!("Exported {} to {name}.", words::count(keys, "key"))),
+                    Err(why) => Said::bad(why),
+                };
+            }
+            Purpose::Import => match files::read(&file) {
+                Ok(doc) => self.doing = Doing::Importing { doc, file },
+                Err(why) => self.said = Said::bad(why),
+            },
+            Purpose::Backup => {
+                self.said = match files::backup(&self.key, &file) {
+                    Ok(()) => Said::good(format!("Backed up to {name}.")),
+                    Err(why) => Said::bad(why),
+                };
+            }
+            Purpose::Restore => self.doing = Doing::Restoring(file),
+        }
+    }
+
+    /// Asking before a document is written into the registry.
+    fn asking_import(&self, doc: &Document, file: &std::path::Path) -> String {
+        let into = self.layer.as_deref().map(|layer| format!(", into the layer {layer}")).unwrap_or_default();
+        format!(
+            "<aside class=\"details\" aria-label=\"Import\"><h2>Import</h2><p class=\"id\">{file}</p>\
+             <div class=\"asking\" role=\"alertdialog\" aria-label=\"Import\"><p>Write <strong>{reach}</strong>{into}, with their values? \
+             Values already there are replaced. All of it is written, or none.</p>\
+             <button type=\"button\" class=\"primary\" fx-click=\"import-yes\" fx-autofocus>Import</button><button type=\"button\" fx-click=\"cancel\">Cancel</button></div></aside>",
+            file = escape(&file.display().to_string()),
+            reach = escape(&files::reach(doc)),
+        )
+    }
+
+    /// Asking before the key shown is replaced from a backup.
+    fn asking_restore(&self, file: &std::path::Path) -> String {
+        format!(
+            "<aside class=\"details\" aria-label=\"Restore\"><h2>Restore</h2><p class=\"id\">{file}</p>\
+             <div class=\"asking\" role=\"alertdialog\" aria-label=\"Restore\"><p>Replace <strong>{key}</strong> and everything under it with what the backup holds? \
+             What is there now goes. This can't be undone.</p>\
+             <button type=\"button\" class=\"danger\" fx-click=\"restore-yes\" fx-autofocus>Restore</button><button type=\"button\" fx-click=\"cancel\">Cancel</button></div></aside>",
+            file = escape(&file.display().to_string()),
+            key = escape(&self.key),
+        )
     }
 
     /// What the person may not change of the key shown, in words, if any.
@@ -992,6 +1117,32 @@ impl Live for Editor {
             }
             "refresh" => self.refresh(),
             "layers" => self.open_layers(),
+            "export" => self.choose(Purpose::Export),
+            "import" if self.layer_refused.is_none() => self.choose(Purpose::Import),
+            "backup" if self.held.backup => self.choose(Purpose::Backup),
+            "restore" if self.held.restore => self.choose(Purpose::Restore),
+            "import-yes" => {
+                if let Doing::Importing { doc, file } = std::mem::replace(&mut self.doing, Doing::Looking) {
+                    match files::import(&doc, self.layer.as_deref()) {
+                        Ok(keys) => {
+                            self.said = Said::good(format!("Imported {} from {}.", words::count(keys, "key"), file.display()));
+                            self.refresh();
+                        }
+                        Err(why) => self.said = Said::bad(why),
+                    }
+                }
+            }
+            "restore-yes" => {
+                if let Doing::Restoring(file) = std::mem::replace(&mut self.doing, Doing::Looking) {
+                    match files::restore(&self.key, &file) {
+                        Ok(()) => {
+                            self.said = Said::good(format!("Restored {} from {}.", self.key, file.display()));
+                            self.refresh();
+                        }
+                        Err(why) => self.said = Said::bad(why),
+                    }
+                }
+            }
             "edit" => {
                 let name = value["name"].as_str().map(str::to_string).or_else(|| self.value.clone());
                 if name.is_some() {
@@ -1148,6 +1299,8 @@ mod tests {
             layers: Vec::new(),
             layer: None,
             layer_refused: None,
+            held: Held { backup: true, restore: true },
+            choosing: false,
             value: None,
             origin: None,
             doing: Doing::Looking,
@@ -1360,6 +1513,34 @@ mod tests {
         assert_eq!(editor.layer.as_deref(), Some("policy"));
         assert!(!editor.layer_note().contains("Changes go to"));
         assert!(editor.layer_options().contains(r#"<option value="policy">policy</option>"#));
+    }
+
+    #[test]
+    fn files_are_offered_as_far_as_the_privileges_and_the_layer_allow() {
+        let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", listing(&[]))]);
+        let buttons = editor.file_buttons();
+        assert!(buttons.contains(r#"fx-click="export">Export…"#) && buttons.contains(r#"fx-click="restore">Restore…"#));
+        editor.held = Held { backup: false, restore: false };
+        let buttons = editor.file_buttons();
+        assert!(buttons.contains(r#"fx-click="backup" disabled title="Backing up needs the privilege to back up files and keys (SeBackupPrivilege)"#));
+        assert!(buttons.contains(r#"fx-click="restore" disabled title="Restoring needs the privilege"#));
+        editor.layer_refused = Some("You may not write into the layer policy.".into());
+        assert!(editor.file_buttons().contains(r#"fx-click="import" disabled title="You may not write into the layer policy.""#));
+        editor.choosing = true;
+        assert!(editor.file_buttons().contains(r#"fx-click="export" disabled title="A file is being chosen already.""#));
+    }
+
+    #[test]
+    fn an_import_says_where_it_writes_before_it_does() {
+        let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", listing(&[]))]);
+        let doc: Document = serde_json::from_str(r#"{"keys":[{"path":"Machine\\App"},{"path":"Machine\\App\\Sub"}]}"#).unwrap();
+        editor.doing = Doing::Importing { doc, file: "/home/dana/App.json".into() };
+        let asked = editor.details();
+        assert!(asked.contains(r"Write <strong>Machine\App and 1 more key</strong>, with their values?"));
+        editor.layer = Some("policy".into());
+        assert!(editor.details().contains(", into the layer policy"));
+        editor.doing = Doing::Restoring("/home/dana/App.regbackup".into());
+        assert!(editor.details().contains(r"Replace <strong>Machine\App</strong> and everything under it with what the backup holds?"));
     }
 
     #[test]

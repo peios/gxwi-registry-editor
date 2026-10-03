@@ -182,6 +182,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-soli
 .details button.primary { color: var(--accent-on); background: var(--accent-solid); border-color: var(--accent-solid); }
 .details button.danger { color: var(--danger-text); border-color: var(--danger-text); }
 
+/* The key to a file and back. */
+.details .files { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border-default); }
+.details .files h3 { margin-top: 0; }
+.details .files .actions { margin-top: 0; }
+
 /* What the registry manual says, at the foot of the pane. */
 .details .docs { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--border-default); }
 .details .docs h3:first-child { margin-top: 0; }
