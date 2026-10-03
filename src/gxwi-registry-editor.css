@@ -137,6 +137,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-soli
 .entries .data.misfit { color: var(--danger-text); }
 .entries button:hover { background: var(--surface-2); }
 .entries button[aria-selected="true"] { background: var(--surface-2); border-color: var(--accent-solid); }
+/* Values the manual documents that aren't set, after those that are. */
+.entries li:not(.unset) + .unset { margin-top: var(--space-1); padding-top: var(--space-1); border-top: 1px dashed var(--border-default); }
+.entries .unset .name, .entries .unset .type, .entries .unset .data { color: var(--text-muted); }
+.entries .unset .data { font: italic 500 12px/1.4 var(--font-text); }
 
 /* The value picked, or the key, in full. */
 .details {
@@ -195,26 +199,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-soli
 .details .prose p, .details .prose ul { margin: var(--space-2) 0 0; }
 .details .prose ul { padding-left: var(--space-4); }
 .details .prose h4 { margin: var(--space-3) 0 0; font-size: 12px; color: var(--text-primary); }
-.details .prose code, .details .unset code { font: 500 11px/1.4 var(--font-mono); color: var(--text-primary); overflow-wrap: anywhere; }
+.details .prose code { font: 500 11px/1.4 var(--font-mono); color: var(--text-primary); overflow-wrap: anywhere; }
 .details .prose pre { padding: var(--space-2); font: 500 11px/1.5 var(--font-mono); background: var(--bg-sunken); border-radius: var(--radius-sm); white-space: pre-wrap; }
-.details .unset { margin: 0; padding: 0; list-style: none; font-size: 12px; }
-.details .unset li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-default); }
-.details .unset li:last-child { border-bottom: 0; }
-.details .unset .default, .details .unset .summary { grid-column: 1; color: var(--text-muted); }
-.details .unset .summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
-.details .unset button {
-    grid-column: 2;
-    grid-row: 1 / span 3;
-    align-self: center;
-    height: var(--control-sm);
-    padding: 0 var(--space-3);
-    font-size: 12px;
-    color: var(--text-primary);
-    background: var(--surface-2);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-}
 
 /* Which layer writes go to, in the bar. */
 .bar .layer { display: flex; align-items: center; gap: var(--space-2); font-size: 12px; color: var(--text-secondary); }

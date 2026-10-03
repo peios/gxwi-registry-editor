@@ -18,6 +18,7 @@ use peios::registry::{Data, ValueType};
 use peios::security::Sid;
 
 use crate::docs::{self, Docs};
+use libregman::fragment::Record;
 use crate::edit::{self, Base, Form};
 use crate::files::{self, Held, Purpose};
 use crate::keys::{self, May, Origin, Read};
@@ -67,8 +68,9 @@ enum Doing {
     /// A value being edited, or a new one (`name` is `None`). Its type, and
     /// whether its data doesn't fit the type, which is then edited as bytes.
     /// `sequence` is the value's when the editing began: it is saved only
-    /// if no one has changed it since.
-    Editing { name: Option<String>, ty: ValueType, misfit: bool, base: Base, sequence: Option<u64> },
+    /// if no one has changed it since. A new value the manual documents
+    /// comes `documented`, named already, so its data is what is typed.
+    Editing { name: Option<String>, ty: ValueType, misfit: bool, base: Base, sequence: Option<u64>, documented: bool },
     /// A new key under the one shown.
     NewKey,
     /// Asking before the value is deleted.
@@ -249,10 +251,27 @@ impl Editor {
         self.reads.insert(path.to_lowercase(), read);
     }
 
+    /// Picks the value `name`: one set here, or one the manual documents
+    /// that isn't.
     fn pick(&mut self, value: Option<String>) {
-        let still = value.filter(|name| self.values().is_some_and(|values| values.iter().any(|value| value.name == *name)));
-        self.origin = still.as_deref().and_then(|name| keys::origin(&self.key, name));
+        let set = |name: &str| self.values().is_some_and(|values| values.iter().any(|value| value.name == name));
+        let still = value.filter(|name| set(name) || self.unset().iter().any(|(documented, _)| documented == name));
+        self.origin = still.as_deref().filter(|name| set(name)).and_then(|name| keys::origin(&self.key, name));
         self.value = still;
+    }
+
+    /// The values the manual documents for the key shown that aren't set
+    /// here, by name. None, if its values can't be read.
+    fn unset(&self) -> Vec<&(String, Record)> {
+        let Some(values) = self.values() else { return Vec::new() };
+        let set: HashSet<String> = values.iter().map(|value| libregman::fold::fold(&value.name)).collect();
+        self.docs.values.iter().filter(|(name, _)| !set.contains(&libregman::fold::fold(name))).collect()
+    }
+
+    /// The documented value picked, if the one picked isn't set here.
+    fn picked_unset(&self) -> Option<&(String, Record)> {
+        let name = self.value.as_deref()?;
+        self.unset().into_iter().find(|(documented, _)| documented == name)
     }
 
     fn shown(&self) -> Option<&Result<Read, String>> {
@@ -353,10 +372,11 @@ impl Editor {
             Ok(values) => values,
             Err(why) => return format!("<p class=\"trouble\">{}</p>", escape(why)),
         };
-        if values.is_empty() {
+        let unset = self.unset();
+        if values.is_empty() && unset.is_empty() {
             return "<p class=\"more\">This key has no values.</p>".into();
         }
-        let rows: String = values
+        let mut rows: String = values
             .iter()
             .map(|value| {
                 let misfit = words::misfit(&value.data).is_some();
@@ -375,6 +395,25 @@ impl Editor {
                 )
             })
             .collect();
+        // Then those the manual documents that aren't set, greyed: they
+        // aren't values, so they have no menu, and double-clicking one sets
+        // it.
+        for (name, record) in unset {
+            let kind = docs::ty(record).map(words::kind).or_else(|| record.type_.clone()).unwrap_or_default();
+            let data = match docs::default(record) {
+                Some(default) => format!("Not set · default {default}"),
+                None => "Not set".into(),
+            };
+            rows += &format!(
+                "<li class=\"unset\"><button type=\"button\" fx-click=\"value\"{set} fx-value-name=\"{name}\" aria-selected=\"{picked}\" title=\"Not set here: documented in the registry manual\">\
+                 <span class=\"name\">{name}</span><span class=\"type\">{kind}</span><span class=\"data\">{data}</span></button></li>",
+                set = if self.may.set_values { " fx-dblclick=\"set-documented\"" } else { "" },
+                name = escape(name),
+                picked = self.value.as_deref() == Some(name.as_str()),
+                kind = escape(&kind),
+                data = escape(&data),
+            );
+        }
         format!("<ul class=\"entries\">{rows}</ul>")
     }
 
@@ -392,7 +431,7 @@ impl Editor {
     /// otherwise the value picked, or else the key.
     fn details(&self) -> String {
         match &self.doing {
-            Doing::Editing { name, ty, misfit, base, .. } => return self.value_form(name.as_deref(), *ty, *misfit, *base),
+            Doing::Editing { name, ty, misfit, base, documented, .. } => return self.value_form(name.as_deref(), *ty, *misfit, *base, *documented),
             Doing::NewKey => return self.key_form(),
             Doing::DeletingKey => return self.asking_key(),
             Doing::Importing { doc, file } => return self.asking_import(doc, file),
@@ -445,7 +484,20 @@ impl Editor {
             return format!(
                 "<aside class=\"details\" aria-label=\"The value\"><h2>{name}</h2><dl>{facts}</dl>{note}{data}{actions}{about}</aside>",
                 name = escape(words::value_name(&value.name)),
-                about = self.value_docs(value),
+                about = self.value_docs(&value.name, Some(value.data.ty())),
+            );
+        }
+        if let Some((name, _)) = self.picked_unset() {
+            let why = self.because("You may not change this key's values.");
+            let may = if self.may.set_values { String::new() } else { format!("<p class=\"may\">{}</p>", escape(&why)) };
+            return format!(
+                "<aside class=\"details\" aria-label=\"The value\"><h2>{shown}</h2>\
+                 <p class=\"note\">It isn't set here, so whatever reads it uses its default. The registry manual documents it.</p>\
+                 <p class=\"actions\"><button type=\"button\" fx-click=\"set-documented\" fx-value-name=\"{name}\"{off}>Set…</button></p>{may}{about}</aside>",
+                shown = escape(words::value_name(name)),
+                name = escape(name),
+                off = disabled(self.may.set_values, &why),
+                about = self.value_docs(name, None),
             );
         }
         let name = keys::names(&self.key).last().unwrap_or_default();
@@ -506,42 +558,20 @@ impl Editor {
         )
     }
 
-    /// What the manual says of the key shown, and the values it documents
-    /// that aren't set here, each of which can be set from here.
+    /// What the manual says of the key shown. The values it documents that
+    /// aren't set here are in the list, after those that are.
     fn key_docs(&self) -> String {
-        if self.docs.key.is_none() && self.docs.values.is_empty() {
-            return "<section class=\"docs\"><p class=\"note\">The registry manual says nothing of this key.</p></section>".into();
+        match &self.docs.key {
+            Some(record) => format!("<section class=\"docs\"><h3>About this key</h3><div class=\"prose\">{}</div></section>", docs::html(&record.body)),
+            None if !self.docs.values.is_empty() => "<section class=\"docs\"><p class=\"note\">The registry manual documents values of this key, but not the key itself.</p></section>".into(),
+            None => "<section class=\"docs\"><p class=\"note\">The registry manual says nothing of this key.</p></section>".into(),
         }
-        let mut out = String::new();
-        if let Some(record) = &self.docs.key {
-            out += &format!("<h3>About this key</h3><div class=\"prose\">{}</div>", docs::html(&record.body));
-        }
-        let set = |name: &str| self.values().is_some_and(|values| values.iter().any(|value| libregman::fold::fold(&value.name) == libregman::fold::fold(name)));
-        let unset: String = self
-            .docs
-            .values
-            .iter()
-            .filter(|(name, _)| !set(name))
-            .map(|(name, record)| {
-                let default = record.default.as_deref().map(|default| format!("<span class=\"default\">Default: {}</span>", escape(default))).unwrap_or_default();
-                let button = if self.may.set_values && self.values().is_some() {
-                    format!("<button type=\"button\" fx-click=\"set-documented\" fx-value-name=\"{}\">Set…</button>", escape(name))
-                } else {
-                    String::new()
-                };
-                let about = docs::first_paragraph(&record.body);
-                format!("<li><code>{}</code>{default}<span class=\"summary\" title=\"{about}\">{about}</span>{button}</li>", escape(name), about = escape(&about))
-            })
-            .collect();
-        if !unset.is_empty() {
-            out += &format!("<h3>Documented, not set here</h3><ul class=\"unset\">{unset}</ul>");
-        }
-        format!("<section class=\"docs\">{out}</section>")
     }
 
-    /// What the manual says of a value of the key shown.
-    fn value_docs(&self, value: &keys::Value) -> String {
-        let Some(record) = self.docs.value(&value.name) else {
+    /// What the manual says of the value `name` of the key shown, which is
+    /// of the type `ty`, if it is set.
+    fn value_docs(&self, name: &str, ty: Option<ValueType>) -> String {
+        let Some(record) = self.docs.value(name) else {
             return "<section class=\"docs\"><p class=\"note\">The registry manual says nothing of this value.</p></section>".into();
         };
         let row = |name: &str, said: &str| format!("<dt>{name}</dt><dd>{}</dd>", escape(said));
@@ -549,11 +579,13 @@ impl Editor {
         let mut notes = String::new();
         if let Some(documented) = record.type_.as_deref() {
             facts += &row("Type", documented);
-            if docs::ty(record).is_some_and(|ty| ty != value.data.ty()) {
+            if let (Some(expected), Some(ty)) = (docs::ty(record), ty)
+                && expected != ty
+            {
                 notes += &format!(
                     "<p class=\"note bad\">The manual says it should be {}, but it is {}, which whatever reads it may not accept.</p>",
                     escape(documented),
-                    escape(&words::type_name(value.data.ty())),
+                    escape(&words::type_name(ty)),
                 );
             }
         }
@@ -762,7 +794,7 @@ impl Editor {
     }
 
     /// A value being edited, or a new one.
-    fn value_form(&self, name: Option<&str>, ty: ValueType, misfit: bool, base: Base) -> String {
+    fn value_form(&self, name: Option<&str>, ty: ValueType, misfit: bool, base: Base, documented: bool) -> String {
         let head = match name {
             Some(name) => format!(
                 "<h2>{}</h2><p class=\"id\">{} ({})</p>",
@@ -777,12 +809,13 @@ impl Editor {
                     .collect();
                 format!(
                     "<h2>New value</h2>\
-                     <label>Name<input name=\"value-name\" autocomplete=\"off\" spellcheck=\"false\" fx-autofocus placeholder=\"Empty for the key's default value\"></label>\
-                     <label>Type<select name=\"value-type\">{types}</select></label>"
+                     <label>Name<input name=\"value-name\" autocomplete=\"off\" spellcheck=\"false\"{focus} placeholder=\"Empty for the key's default value\"></label>\
+                     <label>Type<select name=\"value-type\">{types}</select></label>",
+                    focus = if documented { "" } else { " fx-autofocus" },
                 )
             }
         };
-        let focus = if name.is_some() { " fx-autofocus" } else { "" };
+        let focus = if name.is_some() || documented { " fx-autofocus" } else { "" };
         let field = match edit::form(ty, misfit) {
             Form::Line => format!("<label>Data<input name=\"value-data\" autocomplete=\"off\" spellcheck=\"false\"{focus}></label>"),
             Form::Lines => format!(
@@ -850,7 +883,7 @@ impl Editor {
     /// Saves what the open form holds.
     fn save(&mut self, fields: &mut Fields) {
         match self.doing.clone() {
-            Doing::Editing { name, ty, misfit, base, sequence } => {
+            Doing::Editing { name, ty, misfit, base, sequence, .. } => {
                 let data = match edit::parse(ty, misfit, fields.get("value-data"), base) {
                     Ok(data) => data,
                     Err(why) => return self.said = Said::bad(why),
@@ -976,13 +1009,13 @@ impl Editor {
                 fields.set("value-data", &edit::text(&value.data));
                 let ty = value.data.ty();
                 let sequence = self.origin.as_ref().map(|origin| origin.sequence);
-                self.doing = Doing::Editing { name: Some(name), ty, misfit, base: Base::Decimal, sequence };
+                self.doing = Doing::Editing { name: Some(name), ty, misfit, base: Base::Decimal, sequence, documented: false };
             }
             None => {
                 fields.set("value-name", "");
                 fields.set("value-type", &ValueType::SZ.0.to_string());
                 fields.set("value-data", "");
-                self.doing = Doing::Editing { name: None, ty: ValueType::SZ, misfit: false, base: Base::Decimal, sequence: None };
+                self.doing = Doing::Editing { name: None, ty: ValueType::SZ, misfit: false, base: Base::Decimal, sequence: None, documented: false };
             }
         }
     }
@@ -1151,15 +1184,28 @@ impl Live for Editor {
             }
             "new-value" => self.edit(None, fields),
             // A documented value not set here: a new value, named and typed
-            // as the manual says.
+            // as the manual says, starting from its default if that is one
+            // that could be typed.
             "set-documented" => {
-                if let Some(name) = value["name"].as_str() {
-                    let ty = self.docs.value(name).and_then(docs::ty).filter(|ty| edit::NEW_TYPES.contains(ty));
+                if let Some(name) = value["name"].as_str()
+                    && self.may.set_values
+                {
+                    let record = self.docs.value(name).cloned();
+                    let record = record.as_ref();
+                    let ty = record.and_then(docs::ty).filter(|ty| edit::NEW_TYPES.contains(ty));
                     self.edit(None, fields);
+                    self.pick(Some(name.to_string()));
                     fields.set("value-name", name);
-                    if let (Some(ty), Doing::Editing { ty: editing, .. }) = (ty, &mut self.doing) {
-                        *editing = ty;
-                        fields.set("value-type", &ty.0.to_string());
+                    if let Doing::Editing { ty: editing, documented, .. } = &mut self.doing {
+                        *documented = true;
+                        if let Some(ty) = ty {
+                            *editing = ty;
+                            fields.set("value-type", &ty.0.to_string());
+                        }
+                    }
+                    let ty = ty.unwrap_or(ValueType::SZ);
+                    if let Some(literal) = record.and_then(docs::literal).filter(|literal| edit::parse(ty, false, literal, Base::Decimal).is_ok()) {
+                        fields.set("value-data", literal);
                     }
                 }
             }
@@ -1471,19 +1517,60 @@ mod tests {
         };
         let key = editor.details();
         assert!(key.contains("<h3>About this key</h3><div class=\"prose\"><p>The app's <strong>settings</strong>.</p></div>"));
-        // Theme is set; Size isn't, and can be.
-        assert!(key.contains(r#"<li><code>Size</code><span class="default">Default: 12</span><span class="summary" title="Its size.">Its size.</span><button type="button" fx-click="set-documented" fx-value-name="Size">Set…</button></li>"#));
-        assert!(!key.contains("<code>Theme</code>"));
+        // Theme is set; Size isn't, and is listed after it, greyed, saying
+        // so, and set by double-clicking it.
+        let listing = editor.listing();
+        assert!(listing.find(">Theme<").unwrap() < listing.find(">Size<").unwrap());
+        assert!(listing.contains(r#"<li class="unset"><button type="button" fx-click="value" fx-dblclick="set-documented" fx-value-name="Size" aria-selected="false""#));
+        assert!(listing.contains(r#"<span class="type">Number</span><span class="data">Not set · default 12</span>"#));
+        assert!(!listing.contains(r#"class="unset"><button type="button" fx-click="value" fx-dblclick="set-documented" fx-value-name="Theme""#));
+        // It isn't a value: not counted, and not in the key's pane.
+        assert!(editor.footer().contains("1 value<"));
+        assert!(!key.contains("Size"));
         editor.value = Some("Theme".into());
-        let value = editor.details();
-        assert!(value.contains("<dt>A change applies</dt><dd>At once</dd>"));
-        assert!(value.contains("The manual says it should be REG_SZ, but it is REG_DWORD"));
-        editor.value = None;
+        let theme = editor.details();
+        assert!(theme.contains("<dt>A change applies</dt><dd>At once</dd>"));
+        assert!(theme.contains("The manual says it should be REG_SZ, but it is REG_DWORD"));
+        // Picked, it shows what the manual says, and can be set.
+        editor.pick(Some("Size".into()));
+        let unset = editor.details();
+        assert!(unset.contains("It isn't set here, so whatever reads it uses its default."));
+        assert!(unset.contains(r#"<button type="button" fx-click="set-documented" fx-value-name="Size">Set…</button>"#));
+        assert!(unset.contains("<dt>Default</dt><dd>12</dd>") && !unset.contains("but it is"));
         let mut fields = Fields::default();
         editor.event("set-documented", &serde_json::json!({ "name": "Size" }), &mut fields);
         assert_eq!(fields.get("value-name"), "Size");
         assert_eq!(fields.get("value-type"), ValueType::DWORD.0.to_string());
-        assert!(matches!(editor.doing, Doing::Editing { name: None, ty: ValueType::DWORD, .. }));
+        assert_eq!(fields.get("value-data"), "12");
+        assert!(matches!(editor.doing, Doing::Editing { name: None, ty: ValueType::DWORD, documented: true, .. }));
+        // Its name is given, so its data is what is typed first.
+        let form = editor.details();
+        assert!(form.contains(r#"<input name="value-name" autocomplete="off" spellcheck="false" placeholder"#));
+        assert!(form.contains(r#"<input name="value-data" inputmode="numeric" autocomplete="off" spellcheck="false" fx-autofocus>"#));
+        // Once it is set, it is a value like the others.
+        editor.reads.insert(r"machine\app".into(), Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(vec![value("Size", Data::Dword(12)), value("Theme", Data::Dword(1))]) }));
+        assert!(!editor.listing().contains("class=\"unset\""));
+        // Without the right to change values, it can't be set from here.
+        editor.reads.insert(r"machine\app".into(), Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(Vec::new()) }));
+        editor.may.set_values = false;
+        editor.doing = Doing::Looking;
+        assert!(!editor.listing().contains("fx-dblclick"));
+        editor.pick(Some("Size".into()));
+        assert!(editor.details().contains(r#"fx-click="set-documented" fx-value-name="Size" disabled title="You may not change this key's values.""#));
+    }
+
+    #[test]
+    fn a_key_with_only_documented_values_lists_them_and_one_with_none_says_so() {
+        let (records, _) = libregman::fragment::parse("--- machine\\app mode\ncanonical: Machine\\App Mode\ntype: REG_SZ\ndefault: (none)\n\nIts mode.\n");
+        let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", listing(&[]))]);
+        assert_eq!(editor.listing(), r#"<p class="more">This key has no values.</p>"#);
+        editor.docs = Docs { key: None, values: vec![("Mode".into(), records[0].clone())] };
+        assert!(editor.listing().contains(r#"<span class="type">Text</span><span class="data">Not set</span>"#));
+        assert!(editor.details().contains("The registry manual documents values of this key, but not the key itself."));
+        // A default that is only a remark isn't typed in.
+        let mut fields = Fields::default();
+        editor.event("set-documented", &serde_json::json!({ "name": "Mode" }), &mut fields);
+        assert_eq!(fields.get("value-data"), "");
     }
 
     #[test]
