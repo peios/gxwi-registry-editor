@@ -6,7 +6,7 @@
 //! a key that may not be listed can still have keys beneath it that may be
 //! read. Those are reached by their paths.
 
-use peios::registry::{CreateFlags, Data, Disposition, Key, KeyAccess, OpenFlags, Transaction, ValueType};
+use peios::registry::{CreateFlags, Data, Disposition, Key, KeyAccess, OpenFlags, Transaction, ValueType, layers};
 use peios::security::{SecurityDescriptor, sddl};
 
 const EACCES: i32 = 13;
@@ -204,15 +204,18 @@ pub enum Unset {
     Refused(String),
 }
 
-/// Sets the value `name` of the key at `path` to `data`. With `expected`,
-/// only if the value is still as it was when it was read: its sequence
-/// number then.
-pub fn set(path: &str, name: &str, data: &Data, expected: Option<u64>) -> Result<(), Unset> {
+/// Sets the value `name` of the key at `path` to `data`, in `layer` (`None`
+/// for the base layer). With `expected`, only if the value is still as it
+/// was when it was read: its sequence number then.
+pub fn set(path: &str, name: &str, data: &Data, expected: Option<u64>, layer: Option<&str>) -> Result<(), Unset> {
     let key = open(path, KeyAccess::SET_VALUE).map_err(|e| Unset::Refused(refused(&e, "change this key's values")))?;
     let bytes = data.encode();
     let mut write = key.set_value(name.as_bytes(), data.ty(), &bytes);
     if let Some(sequence) = expected {
         write.expect_seq(sequence);
+    }
+    if let Some(layer) = layer {
+        write.layer(layer);
     }
     write.call().map_err(|e| match e.raw_os_error() {
         Some(EAGAIN) => Unset::Changed,
@@ -220,19 +223,21 @@ pub fn set(path: &str, name: &str, data: &Data, expected: Option<u64>) -> Result
     })
 }
 
-/// Deletes the value `name` of the key at `path`.
-pub fn delete_value(path: &str, name: &str) -> Result<(), String> {
+/// Deletes `layer`'s entry for the value `name` of the key at `path`. An
+/// entry beneath it, in a lower layer, then shows.
+pub fn delete_value(path: &str, name: &str, layer: Option<&str>) -> Result<(), String> {
     let key = open(path, KeyAccess::SET_VALUE).map_err(|e| refused(&e, "change this key's values"))?;
-    key.delete_value(name.as_bytes(), None, None).map_err(|e| refused(&e, "delete this value"))
+    key.delete_value(name.as_bytes(), layer, None).map_err(|e| refused(&e, "delete this value"))
 }
 
-/// Creates the key `name` under the key at `path`, and gives its path.
-pub fn create(path: &str, name: &str) -> Result<String, String> {
+/// Creates the key `name` under the key at `path`, in `layer`, and gives its
+/// path.
+pub fn create(path: &str, name: &str, layer: Option<&str>) -> Result<String, String> {
     if name.is_empty() || name.contains(['\\', '/']) {
         return Err("A key's name can't be empty or have \\ or / in it.".into());
     }
     let parent = open(path, KeyAccess::CREATE_SUB_KEY).map_err(|e| refused(&e, "create keys here"))?;
-    let (_, made) = Key::create(Some(&parent), name, KeyAccess::READ_CONTROL, CreateFlags::empty(), None, None)
+    let (_, made) = Key::create(Some(&parent), name, KeyAccess::READ_CONTROL, CreateFlags::empty(), layer, None)
         .map_err(|e| refused(&e, "create this key"))?;
     match made {
         Disposition::CreatedNew => Ok(join(path, name)),
@@ -240,12 +245,26 @@ pub fn create(path: &str, name: &str) -> Result<String, String> {
     }
 }
 
-/// Deletes the key at `path` and everything under it, all or nothing, and
-/// says how many keys went.
-pub fn delete_tree(path: &str) -> Result<u64, String> {
+/// Whether the person may write into `layer`, or why not: the layer's own
+/// metadata key says, by whether it may be opened to change its values
+/// (LCS TRM §5.3.4). The base layer, until its key is made, lets in anyone
+/// who has signed in.
+pub fn may_write_into(layer: Option<&str>) -> Result<(), String> {
+    let name = layer.unwrap_or(layers::BASE);
+    match open(&format!("{}\\{name}", layers::LAYERS), KeyAccess::SET_VALUE) {
+        Ok(_) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(ENOENT) && layer.is_none() => Ok(()),
+        Err(e) if e.raw_os_error() == Some(EACCES) => Err(format!("You may not write into the layer {name}.")),
+        Err(e) => Err(format!("Whether you may write into the layer {name} can't be told: {e}.")),
+    }
+}
+
+/// Deletes the key at `path` and everything under it from `layer`, all or
+/// nothing, and says how many keys went.
+pub fn delete_tree(path: &str, layer: Option<&str>) -> Result<u64, String> {
     let key = open(path, KeyAccess::DELETE | KeyAccess::ENUMERATE_SUB_KEYS).map_err(|e| refused(&e, "delete this key"))?;
     let txn = Transaction::begin().map_err(|e| refused(&e, "delete this key"))?;
-    let deleted = key.delete_tree(None, Some(&txn)).map_err(|e| match e.raw_os_error() {
+    let deleted = key.delete_tree(layer, Some(&txn)).map_err(|e| match e.raw_os_error() {
         // A transaction holds 4,096 changes, and every key is held open
         // until the end (PEI-1241), so the open-file limit comes first.
         Some(ENOMEM | EMFILE) => "It holds more keys than can be deleted at once. Delete some of the keys under it first.".to_string(),

@@ -17,10 +17,12 @@ mod docs;
 mod edit;
 mod editor;
 mod keys;
+mod layers;
 mod permissions;
 mod words;
 
 use editor::Editor;
+use layers::LayersWindow;
 
 // What this program looks like, to whatever lists it. The icon itself is
 // `gxwi-registry-editor.svg` at the repo root, installed as the base theme's.
@@ -101,15 +103,17 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let start = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["--key", path] => match keys::tidy(path) {
-            Some(path) => path,
+            Some(path) => Some(path),
             None => {
                 eprintln!("gxwi-registry-editor: {path:?} is not a key's path");
                 std::process::exit(64);
             }
         },
-        [] => keys::ROOTS[0].to_string(),
+        // The layers, in a window of their own, which the editor opens.
+        ["--layers"] => None,
+        [] => Some(keys::ROOTS[0].to_string()),
         _ => {
-            eprintln!("gxwi-registry-editor: usage: gxwi-registry-editor [--key PATH]");
+            eprintln!("gxwi-registry-editor: usage: gxwi-registry-editor [--key PATH | --layers]");
             std::process::exit(64);
         }
     };
@@ -122,6 +126,19 @@ fn main() {
         }
     };
     app.stylesheet("/gxwi-registry-editor.css", include_str!("gxwi-registry-editor.css"));
+    let Some(start) = start else {
+        let window = app.live("Registry Editor: Layers", LayersWindow::new(Names::new()));
+        let aside = Arc::downgrade(&window);
+        window.update(|layers, fields| {
+            layers.window = aside;
+            layers::fill(layers, fields);
+        });
+        if let Err(e) = app.run() {
+            eprintln!("gxwi-registry-editor: {e}");
+            std::process::exit(1);
+        }
+        return;
+    };
     let editor = Editor::new(&start, Names::new());
     let window = app.live(&editor::title(editor.key()), editor);
     let aside = Arc::downgrade(&window);

@@ -22,9 +22,9 @@ pub fn key(path: &str) -> Result<(Request, Apply), String> {
 }
 
 /// The request for the descriptor the value `name` of the key at `path`
-/// holds, and what writes it back. `may` is whether the person may change
-/// the key's values, which is what changing it takes.
-pub fn value(path: &str, name: &str, may: bool) -> Result<(Request, Apply), String> {
+/// holds, and what writes it back, into `layer`. `may` is whether the
+/// person may change the key's values, which is what changing it takes.
+pub fn value(path: &str, name: &str, may: bool, layer: Option<String>) -> Result<(Request, Apply), String> {
     let sd = keys::bytes(path, name)?;
     let generic = |name: &str, mask: AccessMask| Right { name: name.into(), mask: mask.bits(), general: true };
     let request = Request {
@@ -57,7 +57,7 @@ pub fn value(path: &str, name: &str, may: bool) -> Result<(Request, Apply), Stri
         // not the editor's to write back.
         let now = keys::bytes(&path, &name)?;
         let value = splice(&now, sd, parts)?;
-        keys::set(&path, &name, &Data::Binary(value), None).map_err(|unset| match unset {
+        keys::set(&path, &name, &Data::Binary(value), None, layer.as_deref()).map_err(|unset| match unset {
             Unset::Changed => "it was changed meanwhile".to_string(),
             Unset::Refused(why) => why,
         })

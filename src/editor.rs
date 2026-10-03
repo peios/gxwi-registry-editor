@@ -13,6 +13,7 @@ use std::sync::Weak;
 use gxwi_sd_editor::names::Names;
 use jiff::tz::TimeZone;
 use libgxwi::{Facts, Fields, Live, Surface, Value, escape};
+use peios::registry::layers::{BASE, Layer};
 use peios::registry::{Data, ValueType};
 use peios::security::Sid;
 
@@ -43,6 +44,11 @@ pub struct Editor {
     editing: HashSet<String>,
     /// What the registry manual says of the key shown and its values.
     docs: Docs,
+    /// The layers, and the one writes go to (`None`: the base layer), and
+    /// why the person may not write into it, if they may not.
+    layers: Vec<Layer>,
+    layer: Option<String>,
+    layer_refused: Option<String>,
     names: Names,
     zone: TimeZone,
 }
@@ -96,9 +102,13 @@ impl Editor {
             said: None,
             editing: HashSet::new(),
             docs: Docs::default(),
+            layers: Vec::new(),
+            layer: None,
+            layer_refused: None,
             names,
             zone: TimeZone::system(),
         };
+        editor.read_layers();
         editor.go(path);
         editor.open.insert(editor.key.to_lowercase());
         editor
@@ -126,21 +136,45 @@ impl Editor {
         }
         if keys::same(path, &self.key) {
             // Its permissions may be what changed.
-            self.may = keys::may(&self.key);
+            self.look_at_may();
             self.pick(self.value.clone());
         }
     }
 
-    /// Reads everything in sight again.
+    /// Reads everything in sight again, the layers included.
     fn refresh(&mut self) {
         let paths: Vec<String> = self.watched();
         self.reads.clear();
         for path in paths {
             self.read(&path);
         }
-        self.may = keys::may(&self.key);
+        self.read_layers();
+        self.look_at_may();
         self.docs = docs::of(&self.key);
         self.pick(self.value.clone());
+    }
+
+    /// The layers writes may go to. A layer chosen that has gone is given up
+    /// for the base layer.
+    fn read_layers(&mut self) {
+        self.layers = peios::registry::layers::list().unwrap_or_default();
+        if let Some(chosen) = &self.layer
+            && !self.layers.iter().any(|layer| layer.name.eq_ignore_ascii_case(chosen))
+        {
+            self.layer = None;
+        }
+    }
+
+    /// What the person may change of the key shown, writing into the layer
+    /// chosen: a write needs the key's right and the layer's both.
+    fn look_at_may(&mut self) {
+        self.may = keys::may(&self.key);
+        self.layer_refused = keys::may_write_into(self.layer.as_deref()).err();
+        if self.layer_refused.is_some() {
+            self.may.set_values = false;
+            self.may.create_keys = false;
+            self.may.delete = false;
+        }
     }
 
     /// Shows the key at `path`, with the tree open down to it.
@@ -160,7 +194,7 @@ impl Editor {
         }
         self.key = above;
         self.read(&self.key.clone());
-        self.may = keys::may(&self.key);
+        self.look_at_may();
         self.docs = docs::of(&self.key);
         self.value = None;
         self.origin = None;
@@ -357,7 +391,8 @@ impl Editor {
             if let Some(origin) = &self.origin {
                 facts += &row("Layer", &origin.layer);
             }
-            let note = words::misfit(&value.data).map(|why| format!("<p class=\"note bad\">{}</p>", escape(&why))).unwrap_or_default();
+            let mut note = words::misfit(&value.data).map(|why| format!("<p class=\"note bad\">{}</p>", escape(&why))).unwrap_or_default();
+            note += &self.layer_note();
             let actions = if self.doing == Doing::DeletingValue(value.name.clone()) {
                 format!(
                     "<div class=\"asking\" role=\"alertdialog\" aria-label=\"Delete the value\"><p>Delete the value <strong>{}</strong>? This can't be undone.</p>\
@@ -365,7 +400,7 @@ impl Editor {
                     escape(words::value_name(&value.name)),
                 )
             } else {
-                let off = disabled(self.may.set_values, "You may not change this key's values.");
+                let off = disabled(self.may.set_values, &self.because("You may not change this key's values."));
                 // Who a descriptor lets in can be looked at by anyone who
                 // can read it; the editor says why it can't be changed.
                 let permissions = if value.sddl.is_some() {
@@ -377,7 +412,11 @@ impl Editor {
                     "<p class=\"actions\">{permissions}<button type=\"button\" fx-click=\"edit\" fx-value-name=\"{name}\"{off}>Edit…</button>\
                      <button type=\"button\" fx-click=\"delete-value\" fx-value-name=\"{name}\"{off}>Delete…</button></p>{may}",
                     name = escape(&value.name),
-                    may = if self.may.set_values { String::new() } else { "<p class=\"may\">You may not change this key's values.</p>".into() },
+                    may = if self.may.set_values {
+                        String::new()
+                    } else {
+                        format!("<p class=\"may\">{}</p>", escape(&self.because("You may not change this key's values.")))
+                    },
                 )
             };
             let data = match &value.sddl {
@@ -425,11 +464,14 @@ impl Editor {
         if self.readable() {
             actions += &format!(
                 "<button type=\"button\" fx-click=\"new-key\"{}>New key…</button><button type=\"button\" fx-click=\"new-value\"{}>New value…</button>",
-                disabled(self.may.create_keys, "You may not create keys under this key."),
-                disabled(self.may.set_values, "You may not change this key's values."),
+                disabled(self.may.create_keys, &self.because("You may not create keys under this key.")),
+                disabled(self.may.set_values, &self.because("You may not change this key's values.")),
             );
             if keys::parent(&self.key).is_some() {
-                actions += &format!("<button type=\"button\" fx-click=\"delete-key\"{}>Delete key…</button>", disabled(self.may.delete, "You may not delete this key."));
+                actions += &format!(
+                    "<button type=\"button\" fx-click=\"delete-key\"{}>Delete key…</button>",
+                    disabled(self.may.delete, &self.because("You may not delete this key."))
+                );
             }
         }
         if self.shown().is_some() {
@@ -514,10 +556,62 @@ impl Editor {
         format!("<section class=\"docs\"><h3>From the registry manual</h3><dl>{facts}</dl>{notes}<div class=\"prose\">{}</div></section>", docs::html(&record.body))
     }
 
+    /// The layers a write may go to, the base layer first as "" and the
+    /// rest by precedence. A disabled one is said to be.
+    fn layer_options(&self) -> String {
+        let mut options = "<option value=\"\">base</option>".to_string();
+        for layer in self.layers.iter().filter(|layer| layer.name != BASE) {
+            options += &format!(
+                "<option value=\"{name}\">{name}{disabled}</option>",
+                name = escape(&layer.name),
+                disabled = if layer.enabled { "" } else { " (disabled)" },
+            );
+        }
+        options
+    }
+
+    /// Opens the layers in a window of their own: this program, as
+    /// `--layers`.
+    fn open_layers(&mut self) {
+        let program = std::env::current_exe().unwrap_or_else(|_| "/usr/bin/gxwi-registry-editor".into());
+        if let Err(e) = std::process::Command::new(program).arg("--layers").spawn() {
+            self.said = Said::bad(format!("The layers could not be opened: {e}."));
+        }
+    }
+
+    /// What the layers mean for the value picked: that only the entry that
+    /// wins is shown, and where a change to it goes.
+    fn layer_note(&self) -> String {
+        if self.layers.iter().all(|layer| layer.name == BASE) {
+            return String::new();
+        }
+        let mut said = "Only the entry that wins is shown. Entries for it in lower layers, if any, aren't: the registry has no call that lists them yet.".to_string();
+        let from = self.origin.as_ref().map(|origin| origin.layer.as_str()).unwrap_or(BASE);
+        let to = self.layer.as_deref().unwrap_or(BASE);
+        if !from.eq_ignore_ascii_case(to) {
+            let precedence = |name: &str| self.layers.iter().find(|layer| layer.name.eq_ignore_ascii_case(name)).map(|layer| layer.precedence);
+            said += &format!(" Changes go to the layer {to}");
+            said += &match (precedence(from), precedence(to)) {
+                (Some(winning), Some(chosen)) if chosen < winning => format!(", beneath {from}, so they won't show while {from}'s entry is there."),
+                _ => ".".to_string(),
+            };
+        }
+        format!("<p class=\"note\">{}</p>", escape(&said))
+    }
+
+    /// Why a change may not be made: the layer chosen, if that is why, or
+    /// else `own`, the key's own reason.
+    fn because(&self, own: &str) -> String {
+        self.layer_refused.clone().unwrap_or_else(|| own.to_string())
+    }
+
     /// What the person may not change of the key shown, in words, if any.
     fn may_words(&self) -> Option<String> {
         if !self.readable() {
             return None;
+        }
+        if let Some(why) = &self.layer_refused {
+            return Some(format!("{why} Choose another layer to change this key."));
         }
         let root = keys::parent(&self.key).is_none();
         let May { set_values, create_keys, delete, .. } = self.may;
@@ -636,8 +730,13 @@ impl Editor {
                     Ok(data) => data,
                     Err(why) => return self.said = Said::bad(why),
                 };
+                // The sequence number is of the entry that won, in the layer
+                // it came from: a write into another layer has no entry of
+                // its own to compare it with.
+                let into = self.layer.as_deref().unwrap_or(BASE);
+                let same_layer = self.origin.as_ref().is_some_and(|origin| origin.layer.eq_ignore_ascii_case(into));
                 let (name, expected) = match name {
-                    Some(name) => (name, sequence),
+                    Some(name) => (name, sequence.filter(|_| same_layer)),
                     None => {
                         let name = fields.get("value-name").to_string();
                         if self.values().is_some_and(|values| values.iter().any(|value| value.name == name)) {
@@ -646,7 +745,7 @@ impl Editor {
                         (name, None)
                     }
                 };
-                match keys::set(&self.key, &name, &data, expected) {
+                match keys::set(&self.key, &name, &data, expected, self.layer.as_deref()) {
                     Ok(()) => {
                         self.said = Said::good(format!("Saved {}.", words::value_name(&name)));
                         self.doing = Doing::Looking;
@@ -670,7 +769,7 @@ impl Editor {
                     Err(keys::Unset::Refused(why)) => self.said = Said::bad(why),
                 }
             }
-            Doing::NewKey => match keys::create(&self.key, fields.get("key-name").trim()) {
+            Doing::NewKey => match keys::create(&self.key, fields.get("key-name").trim(), self.layer.as_deref()) {
                 Ok(path) => {
                     let name = keys::names(&path).last().unwrap_or_default().to_string();
                     self.open.insert(self.key.to_lowercase());
@@ -701,7 +800,7 @@ impl Editor {
             return;
         }
         let opened = match &value {
-            Some(name) => permissions::value(&self.key, name, self.may.set_values),
+            Some(name) => permissions::value(&self.key, name, self.may.set_values, self.layer.clone()),
             None => permissions::key(&self.key),
         };
         let (request, mut apply) = match opened {
@@ -842,6 +941,8 @@ impl Live for Editor {
              <input name=\"path\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"A key's path, such as Machine\\System\" aria-label=\"The key's path\">\
              <button type=\"submit\">Go</button>\
              <button type=\"button\" class=\"refresh\" fx-click=\"refresh\" fx-key=\"F5\" title=\"Read again (F5)\">Refresh</button>\
+             <label class=\"layer\">Writes go to<select name=\"layer\">{layers}</select></label>\
+             <button type=\"button\" fx-click=\"layers\">Layers…</button>\
              </form>{said}\
              <div class=\"body\">\
              <nav class=\"tree\" aria-label=\"Keys\"><ul role=\"tree\">{tree}</ul></nav>\
@@ -852,6 +953,7 @@ impl Live for Editor {
             listing = self.listing(),
             details = self.details(),
             footer = self.footer(),
+            layers = self.layer_options(),
         )
     }
 
@@ -889,6 +991,7 @@ impl Live for Editor {
                 self.pick(Some(name));
             }
             "refresh" => self.refresh(),
+            "layers" => self.open_layers(),
             "edit" => {
                 let name = value["name"].as_str().map(str::to_string).or_else(|| self.value.clone());
                 if name.is_some() {
@@ -933,9 +1036,11 @@ impl Live for Editor {
             "delete-value-yes" => {
                 if let Doing::DeletingValue(name) = self.doing.clone() {
                     self.doing = Doing::Looking;
-                    self.said = match keys::delete_value(&self.key, &name) {
-                        Ok(()) => Said::good(format!("Deleted {}.", words::value_name(&name))),
-                        Err(why) => Said::bad(why),
+                    self.said = match (keys::delete_value(&self.key, &name, self.layer.as_deref()), &self.layer) {
+                        (Ok(()), None) => Said::good(format!("Deleted {}.", words::value_name(&name))),
+                        // Only that layer's entry goes: one beneath may show.
+                        (Ok(()), Some(layer)) => Said::good(format!("Deleted the layer {layer}'s entry for {}.", words::value_name(&name))),
+                        (Err(why), _) => Said::bad(why),
                     };
                     self.read(&self.key.clone());
                     self.pick(None);
@@ -948,7 +1053,7 @@ impl Live for Editor {
             "delete-key-yes" if self.doing == Doing::DeletingKey => {
                 self.doing = Doing::Looking;
                 let name = keys::names(&self.key).last().unwrap_or_default().to_string();
-                match keys::delete_tree(&self.key) {
+                match keys::delete_tree(&self.key, self.layer.as_deref()) {
                     Ok(deleted) => {
                         let parent = keys::parent(&self.key).unwrap_or(keys::ROOTS[0]).to_string();
                         self.open.retain(|open| !open.starts_with(&format!("{}\\", self.key.to_lowercase())) && *open != self.key.to_lowercase());
@@ -975,6 +1080,13 @@ impl Live for Editor {
     }
 
     fn input(&mut self, name: &str, fields: &mut Fields) {
+        // The layer writes go to, from the bar.
+        if name == "layer" {
+            let chosen = fields.get("layer");
+            self.layer = self.layers.iter().find(|layer| layer.name != BASE && layer.name == chosen).map(|layer| layer.name.clone());
+            self.look_at_may();
+            return;
+        }
         let Doing::Editing { name: editing, ty, misfit, base, .. } = &mut self.doing else { return };
         match name {
             // A new value's type, picked from the list.
@@ -1033,6 +1145,9 @@ mod tests {
             may: May { set_values: true, create_keys: true, delete: true, read_permissions: true },
             editing: HashSet::new(),
             docs: Docs::default(),
+            layers: Vec::new(),
+            layer: None,
+            layer_refused: None,
             value: None,
             origin: None,
             doing: Doing::Looking,
@@ -1216,6 +1331,35 @@ mod tests {
         assert_eq!(fields.get("value-name"), "Size");
         assert_eq!(fields.get("value-type"), ValueType::DWORD.0.to_string());
         assert!(matches!(editor.doing, Doing::Editing { name: None, ty: ValueType::DWORD, .. }));
+    }
+
+    #[test]
+    fn a_layer_that_may_not_be_written_makes_the_key_read_only_and_says_why() {
+        let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(vec![value("Theme", Data::Sz("dark".into()))]) }))]);
+        editor.layer_refused = Some("You may not write into the layer policy.".into());
+        editor.may.set_values = false;
+        let details = editor.details();
+        assert!(details.contains(r#"fx-click="new-value" disabled title="You may not write into the layer policy.""#));
+        assert!(details.contains("You may not write into the layer policy. Choose another layer to change this key."));
+    }
+
+    #[test]
+    fn with_layers_the_value_says_only_the_winner_is_shown_and_where_changes_go() {
+        let layer = |name: &str, precedence: u32| Layer { name: name.into(), precedence, enabled: true, owner: None, malformed: false };
+        let mut editor = seen("Machine", &[], vec![("Machine", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(vec![value("Theme", Data::Sz("dark".into()))]) }))]);
+        editor.value = Some("Theme".into());
+        editor.origin = Some(Origin { layer: "policy".into(), sequence: 7 });
+        assert_eq!(editor.layer_note(), "");
+        editor.layers = vec![layer("policy", 100), layer(BASE, 0)];
+        let note = editor.layer_note();
+        assert!(note.contains("Only the entry that wins is shown."));
+        assert!(note.contains("Changes go to the layer base, beneath policy, so they won't show while policy's entry is there."));
+        let mut fields = Fields::default();
+        fields.set("layer", "policy");
+        editor.input("layer", &mut fields);
+        assert_eq!(editor.layer.as_deref(), Some("policy"));
+        assert!(!editor.layer_note().contains("Changes go to"));
+        assert!(editor.layer_options().contains(r#"<option value="policy">policy</option>"#));
     }
 
     #[test]

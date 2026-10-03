@@ -211,6 +211,66 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-soli
     cursor: pointer;
 }
 
+/* Which layer writes go to, in the bar. */
+.bar .layer { display: flex; align-items: center; gap: var(--space-2); font-size: 12px; color: var(--text-secondary); }
+.bar select {
+    height: var(--control-sm);
+    padding: 0 var(--space-2);
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+/* The layers window. */
+.layers-window { display: flex; flex-direction: column; height: 100%; overflow-y: auto; padding: var(--space-4); box-sizing: border-box; }
+.layers-window header { display: grid; grid-template-columns: 1fr auto; gap: var(--space-2) var(--space-3); align-items: start; }
+.layers-window h1 { margin: 0; font-size: 17px; }
+.layers-window header p { grid-column: 1; margin: 0; font-size: 12px; color: var(--text-secondary); }
+.layers-window header .refresh { grid-column: 2; grid-row: 1 / span 2; }
+.layers-window .said { margin: var(--space-3) 0 0; }
+.layers-window table { width: 100%; margin-top: var(--space-4); border-collapse: collapse; font-size: 13px; }
+.layers-window th, .layers-window td { padding: var(--space-2); text-align: left; vertical-align: top; border-bottom: 1px solid var(--border-default); }
+.layers-window thead th { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.layers-window td.note, .layers-window .note { font-size: 12px; color: var(--text-muted); }
+.layers-window .note.bad { color: var(--danger-text); }
+.layers-window td.actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.layers-window td.actions p { flex-basis: 100%; margin: 0; }
+.layers-window .precedence { display: flex; gap: var(--space-1); margin: 0; }
+.layers-window .precedence input { width: 6em; }
+.layers-window input, .layers-window select {
+    box-sizing: border-box;
+    height: var(--control-sm);
+    padding: 0 var(--space-2);
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--bg-sunken);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+.layers-window button {
+    height: var(--control-sm);
+    padding: 0 var(--space-3);
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--surface-2);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.layers-window button:disabled, .layers-window input:disabled { color: var(--text-muted); cursor: default; opacity: 0.6; }
+.layers-window button.primary { color: var(--accent-on); background: var(--accent-solid); border-color: var(--accent-solid); }
+.layers-window button.danger { color: var(--danger-text); border-color: var(--danger-text); }
+.layers-window .asking { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.layers-window .asking p { flex-basis: 100%; margin: 0; font-size: 12px; }
+.layers-window .add { margin-top: var(--space-4); }
+.layers-window .add .may { font-size: 12px; color: var(--text-secondary); }
+.layers-window .new { display: grid; grid-template-columns: repeat(3, minmax(0, 12em)); gap: var(--space-2) var(--space-3); align-items: end; }
+.layers-window .new h2 { grid-column: 1 / -1; margin: 0; font-size: 14px; }
+.layers-window .new label { display: flex; flex-direction: column; gap: var(--space-1); font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.layers-window .new .actions { grid-column: 1 / -1; display: flex; gap: var(--space-2); margin: 0; }
+
 /* Asking before something is deleted. */
 .details .asking { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-4) 0 0; }
 .details .asking p { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--text-secondary); }
@@ -255,11 +315,20 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-soli
 .trouble, .said.bad { color: var(--danger-text); }
 .said { flex: none; }
 
-/* Narrow: the data column goes, then the details pane, then the tree
-   narrows. */
+/* Narrow, as half a screen is: the data column goes, then the tree and the
+   pane narrow and the type column goes. The pane stays, since it is where
+   values are changed. */
 @media (max-width: 900px) {
     .head, .entries button { grid-template-columns: minmax(0, 1fr) 120px; }
     .head span:last-child, .entries .data { display: none; }
 }
-@media (max-width: 700px) { .details { display: none; } }
-@media (max-width: 480px) { .tree { width: 45%; } }
+@media (max-width: 760px) {
+    .tree { width: 190px; }
+    .details { width: 250px; }
+    .head, .entries button { grid-template-columns: minmax(0, 1fr); }
+    .head span:nth-child(2), .entries .type { display: none; }
+}
+@media (max-width: 520px) {
+    .tree { width: 35%; }
+    .details { width: 45%; }
+}
