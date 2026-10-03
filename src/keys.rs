@@ -13,6 +13,7 @@ const ENOENT: i32 = 2;
 const EAGAIN: i32 = 11;
 const ENOMEM: i32 = 12;
 const ENOTEMPTY: i32 = 39;
+const EMFILE: i32 = 24;
 
 /// The keys every path starts from. The registry has no call that lists
 /// them. `CurrentUser` is the kernel's name for the reader's own key under
@@ -216,7 +217,9 @@ pub fn delete_tree(path: &str) -> Result<u64, String> {
     let key = open(path, KeyAccess::DELETE | KeyAccess::ENUMERATE_SUB_KEYS).map_err(|e| refused(&e, "delete this key"))?;
     let txn = Transaction::begin().map_err(|e| refused(&e, "delete this key"))?;
     let deleted = key.delete_tree(None, Some(&txn)).map_err(|e| match e.raw_os_error() {
-        Some(ENOMEM) => "It holds more keys than can be deleted at once (4,096). Delete some of the keys under it first.".to_string(),
+        // A transaction holds 4,096 changes, and every key is held open
+        // until the end (PEI-1241), so the open-file limit comes first.
+        Some(ENOMEM | EMFILE) => "It holds more keys than can be deleted at once. Delete some of the keys under it first.".to_string(),
         Some(ENOTEMPTY) => "A key under it is also set in another layer, so it can't be deleted from this one alone.".to_string(),
         _ => refused(&e, "delete this key or a key under it"),
     })?;

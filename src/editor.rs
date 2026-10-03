@@ -117,6 +117,8 @@ impl Editor {
             self.read(path);
         }
         if keys::same(path, &self.key) {
+            // Its permissions may be what changed.
+            self.may = keys::may(&self.key);
             self.pick(self.value.clone());
         }
     }

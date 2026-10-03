@@ -46,7 +46,7 @@ fn watch(window: Weak<Surface<Editor>>) {
             }
             if let Some(key) = keys::watchable(path)
                 && key.set_nonblocking(true).is_ok()
-                && key.notify(NotifyFilter::VALUE | NotifyFilter::SUBKEY, false).is_ok()
+                && key.notify(NotifyFilter::VALUE | NotifyFilter::SUBKEY | NotifyFilter::SD, false).is_ok()
             {
                 watching.insert(lower.clone(), (path.clone(), key));
             }
