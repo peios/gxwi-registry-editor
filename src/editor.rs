@@ -16,6 +16,7 @@ use libgxwi::{Facts, Fields, Live, Surface, Value, escape};
 use peios::registry::{Data, ValueType};
 use peios::security::Sid;
 
+use crate::docs::{self, Docs};
 use crate::edit::{self, Base, Form};
 use crate::keys::{self, May, Origin, Read};
 use crate::{permissions, words};
@@ -40,6 +41,8 @@ pub struct Editor {
     /// What the permissions editor is open on: a key's path, or a key's
     /// path and a value's name, in lower case.
     editing: HashSet<String>,
+    /// What the registry manual says of the key shown and its values.
+    docs: Docs,
     names: Names,
     zone: TimeZone,
 }
@@ -92,6 +95,7 @@ impl Editor {
             doing: Doing::Looking,
             said: None,
             editing: HashSet::new(),
+            docs: Docs::default(),
             names,
             zone: TimeZone::system(),
         };
@@ -135,6 +139,7 @@ impl Editor {
             self.read(&path);
         }
         self.may = keys::may(&self.key);
+        self.docs = docs::of(&self.key);
         self.pick(self.value.clone());
     }
 
@@ -156,6 +161,7 @@ impl Editor {
         self.key = above;
         self.read(&self.key.clone());
         self.may = keys::may(&self.key);
+        self.docs = docs::of(&self.key);
         self.value = None;
         self.origin = None;
         self.doing = Doing::Looking;
@@ -383,8 +389,9 @@ impl Editor {
                 None => format!("<h3>Data</h3>{}", data(&value.data)),
             };
             return format!(
-                "<aside class=\"details\" aria-label=\"The value\"><h2>{name}</h2><dl>{facts}</dl>{note}{data}{actions}</aside>",
+                "<aside class=\"details\" aria-label=\"The value\"><h2>{name}</h2><dl>{facts}</dl>{note}{data}{actions}{about}</aside>",
                 name = escape(words::value_name(&value.name)),
+                about = self.value_docs(value),
             );
         }
         let name = keys::names(&self.key).last().unwrap_or_default();
@@ -433,11 +440,78 @@ impl Editor {
         }
         format!(
             "<aside class=\"details\" aria-label=\"The key\"><h2>{name}</h2><p class=\"id\">{path}</p><dl>{facts}</dl>{notes}\
-             <p class=\"actions\">{actions}<button type=\"button\" fx-copy=\"path\" fx-value-path=\"{path}\">Copy path</button></p>{may}</aside>",
+             <p class=\"actions\">{actions}<button type=\"button\" fx-copy=\"path\" fx-value-path=\"{path}\">Copy path</button></p>{may}{about}</aside>",
             name = escape(name),
             path = escape(&self.key),
             may = self.may_words().map(|said| format!("<p class=\"may\">{said}</p>")).unwrap_or_default(),
+            about = self.key_docs(),
         )
+    }
+
+    /// What the manual says of the key shown, and the values it documents
+    /// that aren't set here, each of which can be set from here.
+    fn key_docs(&self) -> String {
+        if self.docs.key.is_none() && self.docs.values.is_empty() {
+            return "<section class=\"docs\"><p class=\"note\">The registry manual says nothing of this key.</p></section>".into();
+        }
+        let mut out = String::new();
+        if let Some(record) = &self.docs.key {
+            out += &format!("<h3>About this key</h3><div class=\"prose\">{}</div>", docs::html(&record.body));
+        }
+        let set = |name: &str| self.values().is_some_and(|values| values.iter().any(|value| libregman::fold::fold(&value.name) == libregman::fold::fold(name)));
+        let unset: String = self
+            .docs
+            .values
+            .iter()
+            .filter(|(name, _)| !set(name))
+            .map(|(name, record)| {
+                let default = record.default.as_deref().map(|default| format!("<span class=\"default\">Default: {}</span>", escape(default))).unwrap_or_default();
+                let button = if self.may.set_values && self.values().is_some() {
+                    format!("<button type=\"button\" fx-click=\"set-documented\" fx-value-name=\"{}\">Set…</button>", escape(name))
+                } else {
+                    String::new()
+                };
+                let about = docs::first_paragraph(&record.body);
+                format!("<li><code>{}</code>{default}<span class=\"summary\" title=\"{about}\">{about}</span>{button}</li>", escape(name), about = escape(&about))
+            })
+            .collect();
+        if !unset.is_empty() {
+            out += &format!("<h3>Documented, not set here</h3><ul class=\"unset\">{unset}</ul>");
+        }
+        format!("<section class=\"docs\">{out}</section>")
+    }
+
+    /// What the manual says of a value of the key shown.
+    fn value_docs(&self, value: &keys::Value) -> String {
+        let Some(record) = self.docs.value(&value.name) else {
+            return "<section class=\"docs\"><p class=\"note\">The registry manual says nothing of this value.</p></section>".into();
+        };
+        let row = |name: &str, said: &str| format!("<dt>{name}</dt><dd>{}</dd>", escape(said));
+        let mut facts = String::new();
+        let mut notes = String::new();
+        if let Some(documented) = record.type_.as_deref() {
+            facts += &row("Type", documented);
+            if docs::ty(record).is_some_and(|ty| ty != value.data.ty()) {
+                notes += &format!(
+                    "<p class=\"note bad\">The manual says it should be {}, but it is {}, which whatever reads it may not accept.</p>",
+                    escape(documented),
+                    escape(&words::type_name(value.data.ty())),
+                );
+            }
+        }
+        if let Some(default) = &record.default {
+            facts += &row("Default", default);
+        }
+        if let Some(valid) = &record.valid {
+            facts += &row("May be", valid);
+        }
+        if let Some(applies) = docs::applies(record) {
+            facts += &row("A change applies", applies);
+        }
+        if let Some(instead) = &record.deprecated {
+            notes += &format!("<p class=\"note bad\">It is being retired: {}</p>", escape(instead));
+        }
+        format!("<section class=\"docs\"><h3>From the registry manual</h3><dl>{facts}</dl>{notes}<div class=\"prose\">{}</div></section>", docs::html(&record.body))
     }
 
     /// What the person may not change of the key shown, in words, if any.
@@ -822,6 +896,19 @@ impl Live for Editor {
                 }
             }
             "new-value" => self.edit(None, fields),
+            // A documented value not set here: a new value, named and typed
+            // as the manual says.
+            "set-documented" => {
+                if let Some(name) = value["name"].as_str() {
+                    let ty = self.docs.value(name).and_then(docs::ty).filter(|ty| edit::NEW_TYPES.contains(ty));
+                    self.edit(None, fields);
+                    fields.set("value-name", name);
+                    if let (Some(ty), Doing::Editing { ty: editing, .. }) = (ty, &mut self.doing) {
+                        *editing = ty;
+                        fields.set("value-type", &ty.0.to_string());
+                    }
+                }
+            }
             // A value's descriptor, from the value's button; otherwise the key's.
             "permissions" => match value["name"].as_str() {
                 Some(name) if self.values().is_some_and(|values| values.iter().any(|value| value.name == name && value.sddl.is_some())) => {
@@ -945,6 +1032,7 @@ mod tests {
             key: key.into(),
             may: May { set_values: true, create_keys: true, delete: true, read_permissions: true },
             editing: HashSet::new(),
+            docs: Docs::default(),
             value: None,
             origin: None,
             doing: Doing::Looking,
@@ -1098,6 +1186,36 @@ mod tests {
         assert!(editor.details().contains(r#"fx-click="permissions" fx-value-name="Guard">"#));
         editor.value = Some("Plain".into());
         assert!(!editor.details().contains(r#"fx-click="permissions""#));
+    }
+
+    #[test]
+    fn what_the_manual_says_is_shown_and_a_documented_value_can_be_set_from_it() {
+        let (records, _) = libregman::fragment::parse(
+            "--- machine\\app\ncanonical: Machine\\App\n\nThe app's **settings**.\n\n\
+             --- machine\\app theme\ncanonical: Machine\\App Theme\ntype: REG_SZ\ndefault: dark\napplies: live\n\nIts colours.\n\n\
+             --- machine\\app size\ncanonical: Machine\\App Size\ntype: REG_DWORD\ndefault: 12\n\nIts size.\n",
+        );
+        let values = vec![value("Theme", Data::Dword(1))];
+        let mut editor = seen(r"Machine\App", &[], vec![(r"Machine\App", Ok(Read { facts: None, subkeys: Ok(Vec::new()), values: Ok(values) }))]);
+        editor.docs = Docs {
+            key: Some(records[0].clone()),
+            values: vec![("Size".into(), records[2].clone()), ("Theme".into(), records[1].clone())],
+        };
+        let key = editor.details();
+        assert!(key.contains("<h3>About this key</h3><div class=\"prose\"><p>The app's <strong>settings</strong>.</p></div>"));
+        // Theme is set; Size isn't, and can be.
+        assert!(key.contains(r#"<li><code>Size</code><span class="default">Default: 12</span><span class="summary" title="Its size.">Its size.</span><button type="button" fx-click="set-documented" fx-value-name="Size">Set…</button></li>"#));
+        assert!(!key.contains("<code>Theme</code>"));
+        editor.value = Some("Theme".into());
+        let value = editor.details();
+        assert!(value.contains("<dt>A change applies</dt><dd>At once</dd>"));
+        assert!(value.contains("The manual says it should be REG_SZ, but it is REG_DWORD"));
+        editor.value = None;
+        let mut fields = Fields::default();
+        editor.event("set-documented", &serde_json::json!({ "name": "Size" }), &mut fields);
+        assert_eq!(fields.get("value-name"), "Size");
+        assert_eq!(fields.get("value-type"), ValueType::DWORD.0.to_string());
+        assert!(matches!(editor.doing, Doing::Editing { name: None, ty: ValueType::DWORD, .. }));
     }
 
     #[test]

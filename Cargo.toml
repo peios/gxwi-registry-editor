@@ -16,6 +16,9 @@ peios = { git = "https://github.com/peios/peios-rs.git", rev = "3cf23f68d40c4adf
 # and who a key under Users is, said as the editor says it. Beside this
 # checkout until it is pushed.
 gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["names", "splice", "registry"] }
+# What the registry manual says of a key and its values, read as regman
+# reads it. Beside this checkout until it is pushed.
+libregman = { path = "../peiosutils/src/uu/regman/libregman" }
 # A key's last change, said on this machine's clock.
 jiff = "0.2.29"
 # For waiting on the keys being watched.
