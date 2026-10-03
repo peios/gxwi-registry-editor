@@ -101,8 +101,10 @@ impl Editor {
                     self.read(&above.clone());
                 }
                 above.push('\\');
+                above += self.listed(&above, name).unwrap_or(name);
+            } else {
+                above += keys::ROOTS.iter().find(|root| keys::same(root, name)).map_or(name, |root| root);
             }
-            above += self.listed(&above, name).unwrap_or(name);
         }
         self.key = above;
         self.read(&self.key.clone());
