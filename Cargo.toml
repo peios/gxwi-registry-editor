@@ -11,7 +11,7 @@ libgxwi = { path = "../gxwi/libgxwi" }
 # The registry, and its values decoded by their types. The revision libgxwi
 # pins, which it must: `peios-sys` links libpeios, and a program can hold
 # only one of it.
-peios = { git = "https://github.com/peios/peios-rs.git", rev = "2a2a6bb022192f6e98d4e4a6a7efdbdd40d53b35", package = "peios" }
+peios = { git = "https://github.com/peios/peios-rs.git", rev = "02c87cb643c30eef6b74cd1d9d8b0ae067bed69a", package = "peios" }
 # The permissions editor, opened on a key or on a descriptor a value holds,
 # and who a key under Users is, said as the editor says it. Beside this
 # checkout until it is pushed.
