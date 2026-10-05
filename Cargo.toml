@@ -15,7 +15,7 @@ peios = { git = "https://github.com/peios/peios-rs.git", rev = "2a2a6bb022192f6e
 # The permissions editor, opened on a key or on a descriptor a value holds,
 # and who a key under Users is, said as the editor says it. Beside this
 # checkout until it is pushed.
-gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["names", "splice", "registry"] }
+gxwi-sd-editor = { path = "../gxwi-sd-editor", default-features = false, features = ["names", "splice", "registry", "propagate"] }
 # What the registry manual says of a key and its values, read as regman
 # reads it. Beside this checkout until it is pushed.
 libregman = { path = "../peiosutils/src/uu/regman/libregman" }

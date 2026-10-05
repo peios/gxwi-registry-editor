@@ -961,10 +961,12 @@ impl Editor {
             Some(name) => permissions::value(&self.key, name, self.may.set_values, self.layer.clone()),
             None => permissions::key(&self.key),
         };
-        let (request, mut apply) = match opened {
+        let (mut request, mut apply) = match opened {
             Ok(opened) => opened,
             Err(why) => return self.said = Said::bad(format!("The permissions of {called} could not be opened: {why}.")),
         };
+        // A key's own can be pushed into the keys under it.
+        request.can.propagate = value.is_none();
         // What the person may do may change with what was applied, and a
         // value's new bytes are shown.
         let looking = self.window.clone();
@@ -985,7 +987,12 @@ impl Editor {
             }
         };
         self.said = None;
-        match gxwi_sd_editor::edit(&request, applied, done) {
+        let started = if value.is_none() {
+            gxwi_sd_editor::edit_tree(&request, applied, gxwi_sd_editor::registry::Keys, self.key.clone(), done)
+        } else {
+            gxwi_sd_editor::edit(&request, applied, done)
+        };
+        match started {
             Ok(()) => {
                 self.editing.insert(what);
             }
