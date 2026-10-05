@@ -33,6 +33,7 @@ pub fn value(path: &str, name: &str, may: bool, layer: Option<String>) -> Result
             kind: format!("Security descriptor kept in a value of {path}"),
             container: false,
             children: Children::All,
+            ..Object::default()
         },
         sd,
         rights: vec![
@@ -49,7 +50,10 @@ pub fn value(path: &str, name: &str, may: bool, layer: Option<String>) -> Result
             execute: AccessMask::GENERIC_EXECUTE.bits(),
             all: AccessMask::GENERIC_ALL.bits(),
         },
-        can: Can { dacl: may, owner: may, audit: false, why: (!may).then(|| "You may not change this key's values.".to_string()) },
+        // The value holds all of it, so all of it is the person's to change
+        // where they may change the value.
+        can: Can { dacl: may, owner: may, audit: may, label: may, why: (!may).then(|| "You may not change this key's values.".to_string()) },
+        ..Request::default()
     };
     let (path, name) = (path.to_string(), name.to_string());
     let apply = move |sd: &[u8], parts: &[Part]| {
