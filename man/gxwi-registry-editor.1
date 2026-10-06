@@ -1,0 +1,67 @@
+.TH GXWI-REGISTRY-EDITOR 1 "2026-10-06" "Peios"
+.SH NAME
+gxwi-registry-editor \- browse and change the registry on a GXWI desktop
+.SH SYNOPSIS
+.B gxwi-registry-editor
+.RB [ \-\-key
+.IR path " |"
+.BR \-\-layers ]
+.SH DESCRIPTION
+Registry Editor shows the registry: its keys as a tree, from Machine, Users
+and CurrentUser, and the values of the key picked, each with its name, its
+type in words and its data. A path typed at the top goes straight to its key.
+Picking a value shows it in full, with the layer its data came from; with no
+value picked, the pane describes the key. What the registry manual says of a
+key and its values is shown with them, and values the manual documents but
+that are not set are listed greyed, with their defaults.
+.PP
+Values are edited in a form for their type, and added and deleted; keys are
+made, and deleted with everything under them, all or nothing. Changes go to
+the layer chosen in Writes go to, base unless another is chosen. Layers\&...
+opens the layers in a window of their own, to make, enable, disable and
+delete them and set their precedence. Permissions\&... opens a key's permissions, or a
+security descriptor a value holds, in the permissions editor. Files exports
+a key to a registry document and imports one, and backs a key up and
+restores it, each through the file dialog.
+.PP
+It reads and writes the registry as the person, through the kernel's
+registry calls, with no more authority than they have. Each key's own
+permissions say what they may do with it: list it, read its values, change
+them, make keys under it, delete it. What they may not do is shown greyed,
+and the pane says why; a key they may not list or read says so in the tree.
+A key under one they may not list can still be reached by typing its path.
+Backing up needs SeBackupPrivilege and restoring SeRestorePrivilege, which
+Administrators hold. A layer precedence above 0 needs SeTcbPrivilege, which
+Administrators do not hold.
+.PP
+The window watches the keys it shows, so a change made elsewhere appears
+within a moment; Refresh (F5) reads everything again. It needs a desktop: run
+with no GXWI_DISPLAY, it says so and ends.
+.SH OPTIONS
+.TP
+.BI \-\-key " path"
+Open on the key at
+.I path
+rather than on Machine. Names are separated by \e or /, as in
+.BR Machine\eSystem\eServices .
+.TP
+.B \-\-layers
+Open only the layers window. The editor starts itself this way from
+Layers\&...; there is no need to give it by hand.
+.SH FILES
+.TP
+.I /usr/share/apps/dev.peios.gxwi-registry-editor.toml
+Its application declaration, which lists it in the launcher.
+.TP
+.I /usr/share/regman
+The registry manual's records, read as
+.BR regman (1)
+reads them, with its index at
+.IR /var/cache/regman/index .
+.SH SEE ALSO
+.BR reg (1),
+.BR regman (1),
+.BR gxwi-sd-editor (1),
+.BR gxwi-file-dialog (1).
+.PP
+Registry Editor, at learn.peios.org.

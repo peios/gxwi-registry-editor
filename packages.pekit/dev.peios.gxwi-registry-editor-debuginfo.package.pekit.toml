@@ -1,0 +1,12 @@
+[package]
+name = "dev.peios.gxwi-registry-editor-debuginfo"
+description = "GXWI registry editor-debuginfo"
+license = "((MIT OR Apache-2.0) AND Unicode-3.0) AND Apache-2.0 AND (Apache-2.0 OR BSD-2-Clause OR MIT) AND (Apache-2.0 OR BSL-1.0) AND (Apache-2.0 OR MIT) AND BSD-3-Clause AND ISC AND MIT AND (MIT AND BSD-3-Clause) AND (MIT OR Unlicense)"
+
+[dependencies]
+"dev.peios.gxwi-registry-editor" = "= {{release}}"
+
+[files]
+"@source:LICENSE" = "usr/share/licenses/dev.peios.gxwi-registry-editor-debuginfo/LICENSE"
+":licenses/**" = "usr/share/licenses/dev.peios.gxwi-registry-editor-debuginfo/third-party"
+":debug/gxwi-registry-editor/usr/lib/debug/**" = "usr/lib/debug"
